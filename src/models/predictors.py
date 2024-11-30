@@ -1,10 +1,11 @@
 """
-Prediction models for TSA passenger volume forecasting.
+Prediction models for TSA passenger volume forecasting with uncertainty estimation.
 """
+from abc import ABC, abstractmethod
 from src.models.base import BaseModel
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import logging
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
@@ -15,16 +16,45 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from scipy import stats
 import itertools
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-class SARIMAXModel(BaseModel):
-    """SARIMAX model for time series prediction."""
+class TSABaseModel(BaseModel):
+    """Base class for TSA-specific models with uncertainty estimation."""
+    
+    def predict_with_uncertainty(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate predictions with uncertainty estimates.
+        
+        Args:
+            X: Feature DataFrame
+            
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (predictions, uncertainty)
+        """
+        raise NotImplementedError("Subclasses must implement predict_with_uncertainty")
+    
+    def get_prediction_intervals(self, X: pd.DataFrame, 
+                               conf_level: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate prediction intervals.
+        
+        Args:
+            X: Feature DataFrame
+            conf_level: Confidence level (default: 0.95)
+            
+        Returns:
+            Tuple[np.ndarray, np.ndarray]: (lower_bound, upper_bound)
+        """
+        raise NotImplementedError("Subclasses must implement get_prediction_intervals")
+
+class SARIMAXModel(TSABaseModel):
+    """SARIMAX model with uncertainty estimation."""
     
     def __init__(self, name: str, config: Dict[str, Any]):
-        """Initialize SARIMAX model."""
         super().__init__(name, config)
         self.order = config.get('order', (1, 1, 1))
         self.seasonal_order = config.get('seasonal_order', (1, 1, 1, 7))
@@ -33,7 +63,6 @@ class SARIMAXModel(BaseModel):
         self.enforce_invertibility = config.get('enforce_invertibility', True)
         
     def train(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Train SARIMAX model with cross-validation."""
         exog = X[self.exog_vars] if self.exog_vars else None
         
         try:
@@ -46,15 +75,15 @@ class SARIMAXModel(BaseModel):
                 enforce_invertibility=self.enforce_invertibility
             )
             self.fitted_model = self.model.fit(disp=False)
-            logger.info(f"Successfully trained {self.name}")
             self.feature_names = self.exog_vars
+            self.residual_std = np.std(self.fitted_model.resid)
+            logger.info(f"Successfully trained {self.name}")
             
         except Exception as e:
             logger.error(f"Error training {self.name}: {str(e)}")
             raise
             
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate predictions."""
         self.validate_features(X)
         exog = X[self.exog_vars] if self.exog_vars else None
         
@@ -64,19 +93,45 @@ class SARIMAXModel(BaseModel):
         except Exception as e:
             logger.error(f"Error predicting with {self.name}: {str(e)}")
             raise
+            
+    def predict_with_uncertainty(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            predictions = self.predict(X)
+            forecast = self.fitted_model.get_forecast(
+                steps=len(X),
+                exog=X[self.exog_vars] if self.exog_vars else None
+            )
+            uncertainty = forecast.std_err
+            return predictions, uncertainty
+            
+        except Exception as e:
+            logger.error(f"Error predicting with uncertainty: {str(e)}")
+            raise
+            
+    def get_prediction_intervals(self, X: pd.DataFrame, 
+                               conf_level: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            forecast = self.fitted_model.get_forecast(
+                steps=len(X),
+                exog=X[self.exog_vars] if self.exog_vars else None
+            )
+            conf_int = forecast.conf_int(alpha=1-conf_level)
+            return conf_int.iloc[:, 0].values, conf_int.iloc[:, 1].values
+            
+        except Exception as e:
+            logger.error(f"Error calculating prediction intervals: {str(e)}")
+            raise
 
-class SimpleExponentialModel(BaseModel):
-    """Simple exponential smoothing model with multiple seasonality."""
+class SimpleExponentialModel(TSABaseModel):
+    """Exponential smoothing model with uncertainty estimation."""
     
     def __init__(self, name: str, config: Dict[str, Any]):
-        """Initialize exponential smoothing model."""
         super().__init__(name, config)
         self.seasonal_periods = config.get('seasonal_periods', [7])
         self.trend = config.get('trend', 'add')
         self.seasonal = config.get('seasonal', 'add')
         
     def train(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Train exponential smoothing model."""
         try:
             self.model = ExponentialSmoothing(
                 y,
@@ -86,6 +141,7 @@ class SimpleExponentialModel(BaseModel):
                 damped_trend=True
             )
             self.fitted_model = self.model.fit(optimized=True, remove_bias=True)
+            self.residual_std = np.std(self.fitted_model.resid)
             logger.info(f"Successfully trained {self.name}")
             
         except Exception as e:
@@ -93,19 +149,47 @@ class SimpleExponentialModel(BaseModel):
             raise
             
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate predictions."""
         try:
             forecast = self.fitted_model.forecast(len(X))
             return forecast.values
         except Exception as e:
             logger.error(f"Error predicting with {self.name}: {str(e)}")
             raise
+            
+    def predict_with_uncertainty(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            predictions = self.predict(X)
+            # Calculate uncertainty based on residual variance and forecast horizon
+            uncertainty = np.array([
+                self.residual_std * np.sqrt(h + 1) 
+                for h in range(len(X))
+            ])
+            return predictions, uncertainty
+            
+        except Exception as e:
+            logger.error(f"Error predicting with uncertainty: {str(e)}")
+            raise
+            
+    def get_prediction_intervals(self, X: pd.DataFrame, 
+                               conf_level: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            predictions = self.predict(X)
+            z_value = stats.norm.ppf((1 + conf_level) / 2)
+            _, uncertainty = self.predict_with_uncertainty(X)
+            
+            lower_bound = predictions - z_value * uncertainty
+            upper_bound = predictions + z_value * uncertainty
+            
+            return lower_bound, upper_bound
+            
+        except Exception as e:
+            logger.error(f"Error calculating prediction intervals: {str(e)}")
+            raise
 
-class GBMModel(BaseModel):
-    """Gradient Boosting model for TSA prediction."""
+class GBMModel(TSABaseModel):
+    """Gradient Boosting model with uncertainty estimation."""
     
     def __init__(self, name: str, config: Dict[str, Any]):
-        """Initialize GBM model."""
         super().__init__(name, config)
         self.lgb_params = config.get('lgb_params', {
             'objective': 'regression',
@@ -124,7 +208,6 @@ class GBMModel(BaseModel):
         self.scaler = StandardScaler()
         
     def train(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Train GBM model."""
         try:
             X_scaled = pd.DataFrame(
                 self.scaler.fit_transform(X),
@@ -132,6 +215,7 @@ class GBMModel(BaseModel):
                 index=X.index
             )
             
+            # Train main model
             tscv = TimeSeriesSplit(n_splits=5)
             valid_sets = []
             
@@ -148,6 +232,20 @@ class GBMModel(BaseModel):
                 callbacks=[lgb.early_stopping(self.lgb_params['early_stopping_rounds'])]
             )
             
+            # Train quantile models for uncertainty
+            self.quantile_models = {}
+            for q in [0.025, 0.975]:  # For 95% prediction intervals
+                params = self.lgb_params.copy()
+                params['objective'] = 'quantile'
+                params['alpha'] = q
+                
+                self.quantile_models[q] = lgb.train(
+                    params=params,
+                    train_set=valid_sets[0][0],
+                    valid_sets=[vs[1] for vs in valid_sets],
+                    callbacks=[lgb.early_stopping(50)]
+                )
+            
             self.feature_names = X.columns.tolist()
             self.feature_importance = pd.Series(
                 self.model.feature_importance(),
@@ -161,7 +259,6 @@ class GBMModel(BaseModel):
             raise
             
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate predictions."""
         self.validate_features(X)
         try:
             X_scaled = pd.DataFrame(
@@ -173,68 +270,53 @@ class GBMModel(BaseModel):
         except Exception as e:
             logger.error(f"Error predicting with {self.name}: {str(e)}")
             raise
+            
+    def predict_with_uncertainty(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            X_scaled = pd.DataFrame(
+                self.scaler.transform(X),
+                columns=X.columns,
+                index=X.index
+            )
+            
+            predictions = self.model.predict(X_scaled)
+            
+            # Use quantile predictions for uncertainty
+            lower = self.quantile_models[0.025].predict(X_scaled)
+            upper = self.quantile_models[0.975].predict(X_scaled)
+            
+            # Uncertainty as half the prediction interval width
+            uncertainty = (upper - lower) / 4
+            
+            return predictions, uncertainty
+            
+        except Exception as e:
+            logger.error(f"Error predicting with uncertainty: {str(e)}")
+            raise
+            
+    def get_prediction_intervals(self, X: pd.DataFrame, 
+                               conf_level: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            X_scaled = pd.DataFrame(
+                self.scaler.transform(X),
+                columns=X.columns,
+                index=X.index
+            )
+            
+            alpha = (1 - conf_level) / 2
+            lower = self.quantile_models[alpha].predict(X_scaled)
+            upper = self.quantile_models[1-alpha].predict(X_scaled)
+            
+            return lower, upper
+            
+        except Exception as e:
+            logger.error(f"Error calculating prediction intervals: {str(e)}")
+            raise
 
-class TSADataset(Dataset):
-    """Custom dataset for TSA passenger volume."""
-    
-    def __init__(self, X: np.ndarray, y: np.ndarray, seq_length: int):
-        self.X = torch.FloatTensor(X)
-        self.y = torch.FloatTensor(y)
-        self.seq_length = seq_length
-        
-    def __len__(self):
-        return len(self.X) - self.seq_length
-        
-    def __getitem__(self, idx):
-        X_seq = self.X[idx:idx + self.seq_length]
-        y_target = self.y[idx + self.seq_length]
-        return X_seq, y_target
-
-class TSANeuralNet(nn.Module):
-    """Neural network architecture with regularization."""
-    
-    def __init__(self, input_dim: int, hidden_dim: int, num_layers: int,
-                 dropout: float = 0.3):
-        super().__init__()
-        
-        self.input_bn = nn.BatchNorm1d(input_dim)
-        
-        self.lstm = nn.LSTM(
-            input_dim,
-            hidden_dim,
-            num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
-            batch_first=True
-        )
-        
-        self.fc_layers = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, 1)
-        )
-        
-        self.apply(self._init_weights)
-        
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_normal_(module.weight, gain=0.5)
-            if module.bias is not None:
-                module.bias.data.zero_()
-                
-    def forward(self, x):
-        x = self.input_bn(x.transpose(1, 2)).transpose(1, 2)
-        lstm_out, _ = self.lstm(x)
-        last_out = lstm_out[:, -1, :]
-        out = self.fc_layers(last_out)
-        return out.squeeze()
-
-class NeuralNetModel(BaseModel):
-    """Neural network model for TSA prediction."""
+class NeuralNetModel(TSABaseModel):
+    """Neural network model with uncertainty estimation using MC Dropout."""
     
     def __init__(self, name: str, config: Dict[str, Any]):
-        """Initialize neural network model."""
         super().__init__(name, config)
         self.hidden_dim = config.get('hidden_dim', 32)
         self.num_layers = config.get('num_layers', 1)
@@ -243,14 +325,70 @@ class NeuralNetModel(BaseModel):
         self.learning_rate = config.get('learning_rate', 0.001)
         self.weight_decay = config.get('weight_decay', 0.01)
         self.epochs = config.get('epochs', 50)
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.dropout = config.get('dropout', 0.3)
+        self.mc_samples = config.get('mc_samples', 100)  # For uncertainty estimation
         
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.scaler_X = StandardScaler()
         self.scaler_y = StandardScaler()
         
+    def predict_with_uncertainty(self, X: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        self.validate_features(X)
+        try:
+            self.model.train()  # Enable dropout for MC sampling
+            X_scaled = self.scaler_X.transform(X)
+            
+            if len(X_scaled) < self.seq_length:
+                raise ValueError(f"Need at least {self.seq_length} samples")
+            
+            # Prepare sequences
+            sequences = []
+            for i in range(len(X_scaled) - self.seq_length + 1):
+                sequence = X_scaled[i:i + self.seq_length]
+                sequences.append(sequence)
+            
+            sequences = torch.FloatTensor(sequences).to(self.device)
+            
+            # MC Dropout sampling
+            mc_predictions = []
+            for _ in range(self.mc_samples):
+                with torch.no_grad():
+                    pred = self.model(sequences)
+                    mc_predictions.append(pred.cpu().numpy())
+            
+            mc_predictions = np.array(mc_predictions)
+            
+            # Calculate mean and uncertainty
+            mean_pred = np.mean(mc_predictions, axis=0)
+            uncertainty = np.std(mc_predictions, axis=0)
+            
+            # Inverse transform
+            mean_pred = self.scaler_y.inverse_transform(
+                mean_pred.reshape(-1, 1)).squeeze()
+            uncertainty = uncertainty * self.scaler_y.scale_
+            
+            return mean_pred, uncertainty
+        
+        except Exception as e:
+            logger.error(f"Error predicting with uncertainty: {str(e)}")
+            raise
+            
+    def get_prediction_intervals(self, X: pd.DataFrame, 
+                               conf_level: float = 0.95) -> Tuple[np.ndarray, np.ndarray]:
+        try:
+            predictions, uncertainty = self.predict_with_uncertainty(X)
+            z_value = stats.norm.ppf((1 + conf_level) / 2)
+            
+            lower_bound = predictions - z_value * uncertainty
+            upper_bound = predictions + z_value * uncertainty
+            
+            return lower_bound, upper_bound
+            
+        except Exception as e:
+            logger.error(f"Error calculating prediction intervals: {str(e)}")
+            raise
+            
     def train(self, X: pd.DataFrame, y: pd.Series) -> None:
-        """Train neural network model."""
         try:
             X_scaled = self.scaler_X.fit_transform(X)
             y_scaled = self.scaler_y.fit_transform(y.values.reshape(-1, 1)).squeeze()
@@ -342,39 +480,13 @@ class NeuralNetModel(BaseModel):
             raise
             
     def predict(self, X: pd.DataFrame) -> np.ndarray:
-        """Generate predictions."""
-        self.validate_features(X)
-        try:
-            self.model.eval()
-            X_scaled = self.scaler_X.transform(X)
-            
-            if len(X_scaled) < self.seq_length:
-                raise ValueError(f"Need at least {self.seq_length} samples for prediction")
-            
-            sequences = []
-            for i in range(len(X_scaled) - self.seq_length + 1):
-                sequence = X_scaled[i:i + self.seq_length]
-                sequences.append(sequence)
-            
-            sequences = torch.FloatTensor(sequences).to(self.device)
-            
-            with torch.no_grad():
-                predictions_scaled = self.model(sequences)
-            
-            predictions = self.scaler_y.inverse_transform(
-                predictions_scaled.cpu().numpy().reshape(-1, 1)
-            ).squeeze()
-            
-            return predictions
-            
-        except Exception as e:
-            logger.error(f"Error predicting with {self.name}: {str(e)}")
-            raise
+        """Use mean prediction from MC Dropout for point estimates."""
+        predictions, _ = self.predict_with_uncertainty(X)
+        return predictions
 
 if __name__ == "__main__":
     # Example usage
     from datetime import datetime
-    import numpy as np
     
     # Create sample data
     dates = pd.date_range(start='2023-01-01', end='2023-12-31', freq='D')
@@ -392,27 +504,15 @@ if __name__ == "__main__":
     
     # Create synthetic target with multiple patterns
     y = pd.Series(
-        # Base volume
-        5000 +
-        # Weekly seasonality
-        np.sin(np.arange(n_samples) * 2 * np.pi / 7) * 1000 +
-        # Monthly seasonality
-        np.sin(np.arange(n_samples) * 2 * np.pi / 30) * 500 +
-        # Trend
-        np.arange(n_samples) * 0.5 +
-        # Random noise
-        np.random.normal(0, 200, n_samples),
+        5000 +  # Base volume
+        np.sin(np.arange(n_samples) * 2 * np.pi / 7) * 1000 +  # Weekly seasonality
+        np.sin(np.arange(n_samples) * 2 * np.pi / 30) * 500 +  # Monthly seasonality
+        np.arange(n_samples) * 0.5 +  # Trend
+        np.random.normal(0, 200, n_samples),  # Noise
         index=dates
     )
     
-    # Split into train and test
-    train_cutoff = '2023-10-01'
-    X_train = X[:train_cutoff]
-    X_test = X[train_cutoff:]
-    y_train = y[:train_cutoff]
-    y_test = y[train_cutoff:]
-    
-    # Initialize and test all models
+    # Test all models
     models = {
         'sarimax': SARIMAXModel(
             name='sarimax_model',
@@ -424,9 +524,7 @@ if __name__ == "__main__":
         ),
         'exponential': SimpleExponentialModel(
             name='exp_model',
-            config={
-                'seasonal_periods': [7]  # Weekly seasonality
-            }
+            config={'seasonal_periods': [7]}
         ),
         'gbm': GBMModel(
             name='gbm_model',
@@ -444,10 +542,18 @@ if __name__ == "__main__":
                 'hidden_dim': 32,
                 'num_layers': 1,
                 'seq_length': 14,
-                'batch_size': 64
+                'batch_size': 64,
+                'mc_samples': 100
             }
         )
     }
+    
+    # Split data
+    train_cutoff = '2023-10-01'
+    X_train = X[:train_cutoff]
+    X_test = X[train_cutoff:]
+    y_train = y[:train_cutoff]
+    y_test = y[train_cutoff:]
     
     # Train and evaluate each model
     results = {}
@@ -457,37 +563,29 @@ if __name__ == "__main__":
             # Train model
             model.train(X_train, y_train)
             
-            # Make predictions
-            train_pred = model.predict(X_train)
-            test_pred = model.predict(X_test)
+            # Make predictions with uncertainty
+            predictions, uncertainty = model.predict_with_uncertainty(X_test)
+            lower, upper = model.get_prediction_intervals(X_test)
             
             # Calculate metrics
-            train_metrics = model.evaluate(X_train, y_train)
-            test_metrics = model.evaluate(X_test, y_test)
-            
             results[name] = {
-                'train_metrics': train_metrics,
-                'test_metrics': test_metrics
+                'mse': np.mean((predictions - y_test.values) ** 2),
+                'mean_uncertainty': np.mean(uncertainty),
+                'coverage': np.mean((y_test.values >= lower) & (y_test.values <= upper))
             }
             
             print(f"{name} Results:")
-            print(f"Train RMSE: {train_metrics['rmse']:.2f}")
-            print(f"Test RMSE: {test_metrics['rmse']:.2f}")
+            print(f"MSE: {results[name]['mse']:.2f}")
+            print(f"Mean Uncertainty: {results[name]['mean_uncertainty']:.2f}")
+            print(f"95% CI Coverage: {results[name]['coverage']:.2%}")
             
-            # Print feature importance if available
-            if hasattr(model, 'feature_importance') and model.feature_importance is not None:
-                print("\nFeature Importance:")
-                print(model.feature_importance.sort_values(ascending=False))
-                
         except Exception as e:
             print(f"Error with {name}: {str(e)}")
             continue
     
-    # Print summary of all models
     print("\nModel Comparison Summary:")
     print("------------------------")
     for name, result in results.items():
         print(f"\n{name}:")
-        print(f"Train RMSE: {result['train_metrics']['rmse']:.2f}")
-        print(f"Test RMSE: {result['test_metrics']['rmse']:.2f}")
-        print(f"R-squared: {result['test_metrics']['r2']:.3f}")
+        for metric, value in result.items():
+            print(f"{metric}: {value:.4f}")
