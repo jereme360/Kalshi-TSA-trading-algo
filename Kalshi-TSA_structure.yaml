@@ -1,0 +1,210 @@
+project_name: TSA Prediction Trading System
+description: Quantitative trading system for predicting and trading Kalshi TSA weekly check-in contracts
+
+information_flow:
+  description: "Overall system data and execution flow"
+  stages:
+    1_data_ingestion:
+      description: "Collection and processing of raw data sources"
+      flow:
+        - "TSA historical check-in data collected via collectors.py"
+        - "Weather, airline, economic data gathered from APIs"
+        - "Data cleaned and standardized in processor.py"
+        - "Features engineered and stored for modeling"
+
+    2_model_prediction:
+      description: "Multi-model prediction pipeline"
+      flow:
+        - "Base models (SARIMAX, GBM, Neural) make individual predictions"
+        - "Causal analysis provides trading insights"
+        - "Ensemble combines predictions with uncertainty estimates"
+        - "Final predictions with confidence scores generated"
+
+    3_trading_execution:
+      description: "Strategy execution and risk management"
+      flow:
+        - "Trading strategies generate signals based on predictions"
+        - "Risk management applies position sizing and limits"
+        - "Orders executed through Kalshi API"
+        - "Positions and performance monitored"
+
+component_details:
+  src/data/:
+    collectors.py:
+      purpose: "Data collection and synchronization"
+      key_functions:
+        - "TSA data scraping from official website"
+        - "Weather API integration for major airports"
+        - "Airline data collection for pricing/routes"
+        - "Economic indicator retrieval"
+      inputs: "Raw data sources, API endpoints"
+      outputs: "Standardized raw data files"
+      dependencies: "config.py for API keys"
+
+    processor.py:
+      purpose: "Data cleaning and standardization"
+      key_functions:
+        - "Time series alignment"
+        - "Missing data handling"
+        - "Outlier detection"
+        - "Data validation checks"
+      inputs: "Raw data files from collectors"
+      outputs: "Clean, processed datasets"
+      dependencies: "time_safety.py for temporal validation"
+
+    features.py:
+      purpose: "Feature engineering and generation"
+      key_functions:
+        - "Calendar feature creation"
+        - "Seasonal decomposition"
+        - "Technical indicator calculation"
+        - "Feature importance tracking"
+      inputs: "Processed data from processor.py"
+      outputs: "Feature-rich datasets for modeling"
+      dependencies: "causal.py for feature relationships"
+
+  src/models/:
+    base.py:
+      purpose: "Model interface and shared functionality"
+      key_functions:
+        - "Standard model interface definition"
+        - "Common evaluation metrics"
+        - "Model persistence methods"
+      inputs: "Configuration parameters"
+      outputs: "Base class for all models"
+      dependencies: "metrics.py for evaluation"
+
+    causal.py:
+      purpose: "Causal analysis for trading insights"
+      key_functions:
+        - "DAG construction and analysis"
+        - "Confounding factor identification"
+        - "Trading factor analysis"
+      inputs: "Feature data, relationship definitions"
+      outputs: "Causal insights for trading"
+      dependencies: "base.py"
+
+    predictors.py:
+      purpose: "Core prediction models"
+      key_functions:
+        - "SARIMAX for time series patterns"
+        - "GBM for non-linear relationships"
+        - "Neural nets for complex patterns"
+        - "Uncertainty estimation"
+      inputs: "Feature data, training parameters"
+      outputs: "Model predictions with uncertainty"
+      dependencies: "base.py, time_safety.py"
+
+    ensemble.py:
+      purpose: "Model combination and aggregation"
+      key_functions:
+        - "Dynamic model weighting"
+        - "Prediction combination"
+        - "Uncertainty aggregation"
+        - "Performance tracking"
+      inputs: "Individual model predictions"
+      outputs: "Final predictions with confidence"
+      dependencies: "predictors.py, metrics.py"
+
+  src/backtesting/:
+    engine.py:
+      purpose: "Strategy backtesting framework"
+      key_functions:
+        - "Historical simulation"
+        - "Walk-forward testing"
+        - "Performance analysis"
+        - "Market simulation"
+      inputs: "Historical data, strategy parameters"
+      outputs: "Performance metrics, trade analysis"
+      dependencies: "trading/strategies.py, metrics.py"
+
+  src/trading/:
+    strategies.py:
+      purpose: "Trading strategy implementation"
+      key_functions:
+        - "Signal generation"
+        - "Position management"
+        - "Trade timing"
+        - "Strategy optimization"
+      inputs: "Model predictions, market data"
+      outputs: "Trading signals"
+      dependencies: "models/ensemble.py, risk.py"
+
+    kalshi.py:
+      purpose: "Kalshi exchange integration"
+      key_functions:
+        - "API authentication"
+        - "Order execution"
+        - "Market data retrieval"
+        - "Position tracking"
+      inputs: "Trading signals, account credentials"
+      outputs: "Executed trades, market data"
+      dependencies: "config.py, risk.py"
+
+    risk.py:
+      purpose: "Risk management system"
+      key_functions:
+        - "Position sizing"
+        - "Risk limit monitoring"
+        - "Exposure management"
+        - "Performance tracking"
+      inputs: "Trading signals, portfolio state"
+      outputs: "Risk-adjusted positions"
+      dependencies: "metrics.py"
+
+  src/utils/:
+    config.py:
+      purpose: "Configuration management"
+      key_functions:
+        - "Parameter management"
+        - "Credential handling"
+        - "Environment setup"
+      inputs: "Configuration files"
+      outputs: "System configuration"
+      dependencies: None
+
+    time_safety.py:
+      purpose: "Temporal data management"
+      key_functions:
+        - "Look-ahead bias prevention"
+        - "Data availability tracking"
+        - "Time series validation"
+      inputs: "Temporal data"
+      outputs: "Validated time series"
+      dependencies: None
+
+    metrics.py:
+      purpose: "Performance measurement"
+      key_functions:
+        - "Trading metrics calculation"
+        - "Risk metrics"
+        - "Model evaluation"
+      inputs: "Performance data"
+      outputs: "Performance metrics"
+      dependencies: None
+
+system_integration:
+  description: "How components work together"
+  main_workflows:
+    prediction_workflow:
+      steps:
+        1: "Data collection and processing (collectors.py → processor.py)"
+        2: "Feature engineering (features.py)"
+        3: "Model predictions (predictors.py → ensemble.py)"
+        4: "Trading signal generation (strategies.py)"
+        5: "Risk management (risk.py)"
+        6: "Trade execution (kalshi.py)"
+
+    backtest_workflow:
+      steps:
+        1: "Historical data preparation"
+        2: "Strategy simulation (engine.py)"
+        3: "Performance analysis (metrics.py)"
+        4: "Strategy optimization"
+
+deployment:
+  key_considerations:
+    - "Time synchronization across components"
+    - "Error handling and recovery"
+    - "Performance monitoring"
+    - "Risk limit enforcement"
