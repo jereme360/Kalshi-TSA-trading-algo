@@ -5,7 +5,7 @@ scipy==1.10.1
 
 # Machine Learning
 scikit-learn==1.2.2
-lightgbm==3.3.5
+lightgbm --only-binary=:all:
 statsmodels==0.14.0
 torch==2.0.1
 
