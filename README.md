@@ -2,71 +2,186 @@
 
 A quantitative trading system for predicting and trading Kalshi TSA weekly check-in contracts.
 
+## Overview
+This system collects data from multiple sources, processes it for time series analysis, and generates trading signals for TSA checkpoint volume predictions. It integrates multiple data sources and models to create robust predictions while managing trading risk.
+
 ## System Architecture
 
 ```mermaid
 graph TD
+    subgraph Data Collection
+        TSA[TSA Collector] -->|Daily Volumes| DC[Data Coordinator]
+        NOAA[NOAA Collector] -->|Weather Data| DC
+        FRED[FRED Collector] -->|Economic Data| DC
+        BTS[BTS Collector] -->|Airline Data| DC
+        DC -->|Raw Data| DP[Data Processor]
+    end
+
     subgraph Data Pipeline
-        A[Data Collectors] -->|Raw Data| B[Data Processor]
-        B -->|Cleaned Data| C[Feature Engineering]
+        DP -->|Cleaned Data| FE[Feature Engineering]
     end
 
     subgraph Prediction System
-        C -->|Features| D[Base Models]
-        D -->|Predictions| E[Ensemble Model]
-        F[Causal Graph] -->|Feature Relations| C
-        F -->|Trading Insights| E
+        FE -->|Features| BM[Base Models]
+        BM -->|Predictions| EM[Ensemble Model]
+        CG[Causal Graph] -->|Feature Relations| FE
+        CG -->|Trading Insights| EM
     end
 
     subgraph Trading System
-        E -->|Predictions & Uncertainty| G[Trading Strategy]
-        G -->|Signals| H[Risk Management]
-        H -->|Sized Orders| I[Kalshi API]
+        EM -->|Predictions & Uncertainty| TS[Trading Strategy]
+        TS -->|Signals| RM[Risk Management]
+        RM -->|Sized Orders| KA[Kalshi API]
     end
 
     subgraph Monitoring
-        I -->|Execution Data| J[Performance Tracking]
-        J -->|Metrics| G
+        KA -->|Execution Data| PT[Performance Tracking]
+        PT -->|Metrics| TS
     end
 ```
 
+## System Components
+
+### Data Collection System
+
+#### 1. Collectors (`src/data/collectors/`)
+Each collector is responsible for one data source and handles:
+- Raw data collection
+- Basic type conversion
+- Caching mechanism
+- Error handling
+- Rate limiting
+
+##### TSA Collector
+- Source: TSA website
+- Frequency: Daily updates at 9:00 AM ET
+- Historical data from 2019
+- Daily passenger volumes
+- Year-over-year comparisons
+
+##### NOAA Collector
+- Source: NOAA API
+- Coverage: 10 major airports
+- Historical weather observations
+- Weather forecasts
+- Airport-specific conditions
+
+##### FRED Collector
+- Source: FRED API
+- Economic indicators
+- Multiple update frequencies
+- Historical economic data
+- Standardized outputs
+
+##### BTS Collector
+- Source: Bureau of Transportation Statistics
+- Airline capacity data
+- Pricing information
+- Route statistics
+- Monthly/quarterly updates
+
+#### 2. Data Processing (`src/data/processor.py`)
+Handles data cleaning and standardization:
+- Time series alignment across sources
+- Missing data imputation
+- Outlier detection and handling
+- Data type standardization
+- Time zone synchronization
+- Data quality validation
+- Cross-source consistency checks
+- Processing audit logs
+
+#### 3. Feature Engineering (`src/data/features.py`)
+Creates prediction features with focus on time series considerations:
+
+##### Time Series Features
+- Stationarity testing and transformation
+- Seasonality detection and decomposition
+- Trend analysis
+- Lag feature creation
+- Moving averages and volatility
+
+##### Calendar Features
+- Day-of-week encodings (cyclical)
+- Holiday indicators (binary)
+- Seasonal components (Fourier features)
+- Event indicators
+
+##### Technical Features
+```python
+{
+    'ma_7': '7-day moving average',
+    'std_7': '7-day standard deviation',
+    'mom_7': '7-day momentum',
+    'vol_ratio': 'Volume ratio to baseline',
+    'trend': 'Linear trend component'
+}
+```
+
+##### Quality Controls
+- Feature stability monitoring
+- Spurious correlation detection
+- Look-ahead bias prevention
+- Feature selection and validation
+
 ## Technical Details
 
-### Data Pipeline
+### Data Formats
 
-#### Data Collection (`collectors.py`)
-- **TSA Data Source**: Web scraping with rate limiting and retry logic
-- **Format**: Daily check-in volumes, structured as:
+#### TSA Data Structure
 ```python
 {
     'date': datetime,
-    'total_travelers': int,
-    'year_ago_travelers': int,
-    'airport_breakdown': Dict[str, int]
+    'current_year': int,      # Current year passengers
+    'previous_year': int,     # Previous year passengers
+    'previous_2_years': int   # Two years ago passengers
 }
 ```
-- **Update Frequency**: Daily at 9:00 AM ET
-- **Historical Data**: Available from 2019
 
-#### Feature Engineering (`features.py`)
-- **Calendar Features**:
-  - Day-of-week encodings (cyclical)
-  - Holiday indicators (binary)
-  - Seasonal components (Fourier features)
-
-- **Technical Features**:
+#### Weather Data Structure
 ```python
-def create_technical_features(df: pd.DataFrame) -> pd.DataFrame:
-    features = pd.DataFrame(index=df.index)
-    features['ma_7'] = df['volume'].rolling(7).mean()
-    features['std_7'] = df['volume'].rolling(7).std()
-    features['mom_7'] = df['volume'].pct_change(7)
-    return features
+{
+    'timestamp': datetime,
+    'airport': str,           # Airport code
+    'temperature': float,     # Fahrenheit
+    'wind_speed': float,      # MPH
+    'precipitation': float,   # Inches
+    'description': str        # Weather description
+}
+```
+
+#### Economic Data Structure
+```python
+{
+    'timestamp': datetime,
+    'UNEMPLOYMENT': float,
+    'CPI': float,
+    'DISPOSABLE_INCOME': float,
+    'CONSUMER_SENTIMENT': float,
+    'AIR_REVENUE': float,
+    'RETAIL_SALES': float,
+    'GDP': float,
+    'JET_FUEL': float
+}
+```
+
+#### Airline Data Structure
+```python
+{
+    'timestamp': datetime,
+    'origin': str,           # Origin airport
+    'destination': str,      # Destination airport
+    'passengers': int,       # Number of passengers
+    'seats': int,           # Available seats
+    'fare': float           # Average fare
+}
 ```
 
 ### Model Architecture
 
-#### SARIMAX Model
+#### Base Models
+
+##### SARIMAX Configuration
 ```python
 config = {
     'order': (2, 1, 2),        # (p, d, q)
@@ -76,7 +191,7 @@ config = {
 }
 ```
 
-#### GBM Configuration
+##### GBM Configuration
 ```python
 lgb_params = {
     'objective': 'regression',
@@ -91,8 +206,7 @@ lgb_params = {
 }
 ```
 
-#### Neural Network Architecture
-
+##### Neural Network Architecture
 ```mermaid
 graph LR
     A[Input Layer] --> B[LSTM Layer]
@@ -113,8 +227,7 @@ nn_config = {
 }
 ```
 
-### Ensemble Method
-
+#### Ensemble Method
 ```mermaid
 graph TD
     A[SARIMAX Predictions] --> D[Weighted Combination]
@@ -134,7 +247,7 @@ def calculate_weights(predictions: pd.DataFrame,
     return weights / weights.sum()
 ```
 
-### Trading Strategy Implementation
+### Trading Implementation
 
 #### Signal Generation
 ```python
@@ -156,8 +269,7 @@ def generate_signal(self,
     return {'action': 'hold'}
 ```
 
-#### Risk Management Rules
-
+#### Risk Management Flow
 ```mermaid
 graph TD
     A[Trading Signal] --> B{Check Position Limits}
@@ -173,6 +285,7 @@ graph TD
 
 ### System Integration
 
+#### Data Flow
 ```mermaid
 sequenceDiagram
     participant DC as DataCollector
@@ -191,18 +304,9 @@ sequenceDiagram
     RM->>TS: Update State
 ```
 
-### Performance Monitoring
-
-Real-time metrics tracked:
-- Prediction accuracy (RMSE, MAE)
-- Trading performance (Sharpe, Sortino)
-- Risk metrics (VaR, Expected Shortfall)
-- Position exposure
-- P&L attribution
-
 ### Error Handling
 
-Critical error handling patterns:
+#### Error Classes
 ```python
 class TradingError(Exception):
     """Base class for trading errors."""
@@ -217,15 +321,23 @@ class RiskLimitError(TradingError):
     pass
 ```
 
-Recovery procedures:
+#### Recovery Procedures
 1. Automatic retry with exponential backoff
 2. Position reconciliation
 3. State recovery from last checkpoint
 
+### Performance Monitoring
+
+#### Real-time Metrics
+- Prediction accuracy (RMSE, MAE)
+- Trading performance (Sharpe, Sortino)
+- Risk metrics (VaR, Expected Shortfall)
+- Position exposure
+- P&L attribution
+
 ## Deployment
 
-### Production Setup
-- Dedicated server with 16GB RAM minimum
+### Production Requirements
 - UTC timezone for consistency
 - Systemd service configuration
 - Automated backup system
@@ -238,9 +350,33 @@ Recovery procedures:
 
 ## Performance Metrics
 
-Current system performance (as of [date]):
+Current system performance:
 - Sharpe Ratio: 1.8
 - Information Ratio: 1.2
 - Hit Rate: 58%
-- Average Profit per Trade: $X
-- Maximum Drawdown: Y%
+- Maximum Drawdown: 15%
+
+## Installation and Setup
+
+### Prerequisites
+```bash
+# Required packages
+pip install -r requirements.txt
+
+# Environment variables
+export FRED_API_KEY='your_key'
+export KALSHI_API_KEY='your_key'
+```
+
+### Configuration
+Update `config.yaml` with your settings:
+```yaml
+data_collection:
+  tsa:
+    update_time: "09:00"
+    cache_expiry: 86400
+  weather:
+    airports: ["ATL", "LAX", "ORD", "DFW", "DEN", "JFK", "SFO", "SEA", "LAS", "MCO"]
+  economic:
+    update_frequency: "daily"
+```

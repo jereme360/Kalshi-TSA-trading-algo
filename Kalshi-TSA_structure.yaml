@@ -30,38 +30,149 @@ information_flow:
 
 component_details:
   src/data/:
-    collectors.py:
-      purpose: "Data collection and synchronization"
-      key_functions:
-        - "TSA data scraping from official website"
-        - "Weather API integration for major airports"
-        - "Airline data collection for pricing/routes"
-        - "Economic indicator retrieval"
-      inputs: "Raw data sources, API endpoints"
-      outputs: "Standardized raw data files"
-      dependencies: "config.py for API keys"
+    collectors/:
+      base_collector.py:
+        purpose: "Base class for all data collectors"
+        key_functions:
+          - "Define standard collector interface"
+          - "Implement basic caching mechanisms"
+          - "Handle common error logging"
+          - "Provide data validation methods"
+        inputs: "Configuration parameters"
+        outputs: "Base collector class"
+        dependencies: None
+
+      tsa_collector.py:
+        purpose: "TSA checkpoint data collection"
+        key_functions:
+          - "Scrape TSA website data by year"
+          - "Parse daily passenger counts"
+          - "Basic data type conversion"
+          - "Implement caching by year"
+          - "Handle request rate limiting"
+        inputs: "TSA website data"
+        outputs: "Raw daily passenger counts DataFrame"
+        dependencies: "base_collector.py"
+
+      noaa_collector.py:
+        purpose: "Weather data collection for airports"
+        key_functions:
+          - "Fetch NOAA API data for airports"
+          - "Get station/grid mappings"
+          - "Collect historical observations"
+          - "Fetch current forecasts"
+          - "Basic unit conversions (C to F, etc.)"
+        inputs: "NOAA API endpoints"
+        outputs: "Raw weather data by airport"
+        dependencies: "base_collector.py"
+
+      fred_collector.py:
+        purpose: "Economic indicator collection"
+        key_functions:
+          - "Fetch FRED economic series"
+          - "Handle different data frequencies"
+          - "Basic data standardization"
+          - "Track update frequencies"
+          - "Cache management"
+        inputs: "FRED API endpoints"
+        outputs: "Raw economic indicators DataFrame"
+        dependencies: "base_collector.py"
+
+      bts_collector.py:
+        purpose: "Aviation data collection"
+        key_functions:
+          - "Fetch BTS airline capacity data"
+          - "Collect fare information"
+          - "Parse route statistics"
+          - "Handle monthly/quarterly updates"
+          - "Basic data cleaning"
+        inputs: "BTS data sources"
+        outputs: "Raw aviation data DataFrame"
+        dependencies: "base_collector.py"
+
+      main_collector.py:
+        purpose: "Coordinate all data collection"
+        key_functions:
+          - "Initialize all collectors"
+          - "Coordinate data fetching"
+          - "Handle collection errors"
+          - "Manage cache policies"
+          - "Basic data alignment"
+        inputs: "Collection parameters"
+        outputs: "Combined raw data dict"
+        dependencies: "All collector classes"
 
     processor.py:
       purpose: "Data cleaning and standardization"
       key_functions:
-        - "Time series alignment"
-        - "Missing data handling"
-        - "Outlier detection"
-        - "Data validation checks"
-      inputs: "Raw data files from collectors"
-      outputs: "Clean, processed datasets"
-      dependencies: "time_safety.py for temporal validation"
+        - "Time series alignment across different frequencies"
+        - "Missing data imputation with appropriate methods"
+        - "Outlier detection and handling"
+        - "Data type standardization and validation"
+        - "Time zone handling and synchronization"
+        - "Basic data quality checks"
+        - "Handling API-specific data formats"
+        - "Data normalization and scaling"
+        - "Cross-source data consistency checks"
+        - "Cache management for processed data"
+      inputs: 
+        - "Raw data files from collectors"
+        - "Data quality parameters"
+        - "Time alignment specifications"
+      outputs: 
+        - "Clean, processed datasets"
+        - "Data quality reports"
+        - "Processing audit logs"
+      dependencies: 
+        - "time_safety.py for temporal validation"
+        - "config.py for processing parameters"
 
     features.py:
       purpose: "Feature engineering and generation"
       key_functions:
-        - "Calendar feature creation"
-        - "Seasonal decomposition"
-        - "Technical indicator calculation"
-        - "Feature importance tracking"
-      inputs: "Processed data from processor.py"
-      outputs: "Feature-rich datasets for modeling"
-      dependencies: "causal.py for feature relationships"
+        # Time Series Specific
+        - "Stationarity testing and transformation"
+        - "Seasonality detection and decomposition"
+        - "Trend analysis and extraction"
+        - "Lag feature creation with look-ahead prevention"
+        - "Moving average and volatility calculations"
+        
+        # Calendar Features
+        - "Day-of-week encodings"
+        - "Holiday and event indicators"
+        - "Seasonal period identification"
+        - "Time-based feature extraction"
+        
+        # Domain Specific
+        - "Weather impact aggregation"
+        - "Economic indicator transformations"
+        - "Cross-variable interaction features"
+        - "Travel pattern indicators"
+        
+        # Statistical Features
+        - "Correlation analysis with time lag consideration"
+        - "Feature importance calculation"
+        - "Distribution transformation"
+        - "Dimensionality reduction"
+        
+        # Quality Control
+        - "Feature stability monitoring"
+        - "Spurious correlation detection"
+        - "Look-ahead bias prevention"
+        - "Feature selection and validation"
+      inputs: 
+        - "Clean data from processor.py"
+        - "Feature configuration parameters"
+        - "Historical feature importance data"
+      outputs: 
+        - "Feature matrix for modeling"
+        - "Feature importance scores"
+        - "Feature correlation analysis"
+        - "Feature stability metrics"
+      dependencies: 
+        - "causal.py for feature relationships"
+        - "time_safety.py for look-ahead prevention"
+        - "config.py for feature parameters"
 
   src/models/:
     base.py:
