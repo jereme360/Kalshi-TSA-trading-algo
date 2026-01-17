@@ -1,162 +1,107 @@
-"""Collector for TSA checkpoint travel numbers. Handles raw data collection only."""
+"""Collector for TSA checkpoint travel numbers."""
 
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional
 import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-import time
 import logging
 from pathlib import Path
-from .base_collector import BaseCollector
+from .base_collectors import BaseCollector
 
 logger = logging.getLogger(__name__)
 
+
 class TSACollector(BaseCollector):
-    """Collector for raw TSA checkpoint travel numbers."""
-    
+    """Collector for TSA checkpoint passenger counts."""
+
+    BASE_URL = "https://www.tsa.gov/travel/passenger-volumes"
+
     def __init__(self, data_dir: Optional[Path] = None):
-        """Initialize TSA data collector."""
         super().__init__(data_dir)
-        self.base_url = "https://www.tsa.gov/travel/passenger-volumes"
-        self.session = requests.Session()
         self.data_dir = self.data_dir / "tsa"
         self.data_dir.mkdir(parents=True, exist_ok=True)
-    
-    def fetch_data(self,
-                  start_date: datetime,
-                  end_date: Optional[datetime] = None,
-                  use_cache: bool = True) -> pd.DataFrame:
+
+    def fetch_data(self, start_date: datetime, end_date: Optional[datetime] = None,
+                   use_cache: bool = True) -> pd.DataFrame:
         """
-        Fetch raw TSA checkpoint data for date range.
-        
-        Args:
-            start_date: Start date for data collection
-            end_date: End date for data collection (defaults to yesterday)
-            use_cache: Whether to use cached data if available
-            
-        Returns:
-            pd.DataFrame with columns:
-                - date (index): Date of checkpoint data
-                - current_year: Current year passenger count
-                - previous_year: Previous year passenger count
-                - previous_2_years: Two years ago passenger count
+        Fetch TSA checkpoint data for date range.
+
+        Returns DataFrame with 'passengers' column indexed by date.
         """
         end_date = end_date or datetime.now() - timedelta(days=1)
-        
-        if start_date > end_date:
-            raise ValueError("Start date must be before end date")
-        
-        try:
-            # Check cache first if requested
-            if use_cache:
-                cached_data = self._load_from_cache(start_date, end_date)
-                if cached_data is not None:
-                    return cached_data
-            
-            # Fetch data for each year needed
-            years_needed = range(start_date.year, end_date.year + 1)
-            all_data = []
-            
-            for year in years_needed:
-                df = self._fetch_year_data(year)
+
+        if use_cache:
+            cached = self._load_cache()
+            if cached is not None and not cached.empty:
+                # Check if cache covers the date range
+                if cached.index.min() <= start_date and cached.index.max() >= end_date - timedelta(days=2):
+                    return cached[(cached.index >= start_date) & (cached.index <= end_date)]
+
+        # Fetch fresh data
+        all_data = []
+        current_year = datetime.now().year
+
+        for year in range(start_date.year, end_date.year + 1):
+            df = self._fetch_year(year, is_current=(year == current_year))
+            if df is not None:
                 all_data.append(df)
-                
-                # Cache the year's data
-                cache_file = self.data_dir / f"tsa_data_{year}.parquet"
-                df.to_parquet(cache_file)
-                
-                time.sleep(1)  # Be nice to TSA's server
-            
-            # Combine and filter to requested date range
-            combined_df = pd.concat(all_data)
-            mask = (combined_df.index >= start_date) & (combined_df.index <= end_date)
-            return combined_df[mask].copy()
-            
-        except Exception as e:
-            logger.error(f"Error fetching TSA data: {str(e)}")
-            raise
-    
-    def _fetch_year_data(self, year: int) -> pd.DataFrame:
-        """Fetch TSA checkpoint data for a specific year."""
-        url = f"{self.base_url}/{year}"
-        
+
+        if not all_data:
+            return pd.DataFrame(columns=['passengers'])
+
+        combined = pd.concat(all_data).sort_index()
+        combined = combined[~combined.index.duplicated(keep='last')]
+
+        # Save to cache
+        combined.to_parquet(self.data_dir / "tsa_data.parquet")
+
+        return combined[(combined.index >= start_date) & (combined.index <= end_date)]
+
+    def _fetch_year(self, year: int, is_current: bool = False) -> Optional[pd.DataFrame]:
+        """Fetch data for a specific year."""
+        # Current year has no suffix, previous years have /YYYY
+        url = self.BASE_URL if is_current else f"{self.BASE_URL}/{year}"
+
         try:
-            response = self.session.get(url)
+            response = requests.get(url, timeout=30)
             response.raise_for_status()
-            
-            # Parse the webpage
-            soup = BeautifulSoup(response.text, 'html.parser')
+
+            soup = BeautifulSoup(response.text, 'lxml')
             table = soup.find('table')
-            
             if not table:
-                raise ValueError(f"No data table found for year {year}")
-            
-            # Parse table into DataFrame
+                logger.warning(f"No table found for year {year}")
+                return None
+
             df = pd.read_html(str(table))[0]
-            
-            # Clean up column names
-            df.columns = ['date', 'current_year', 'previous_year', 'previous_2_years']
-            
-            # Convert date to datetime
+
+            # Normalize column names (TSA uses 'Date' and 'Numbers')
+            df.columns = ['date', 'passengers']
             df['date'] = pd.to_datetime(df['date'])
-            
-            # Convert passenger numbers to integers
-            for col in ['current_year', 'previous_year', 'previous_2_years']:
-                df[col] = pd.to_numeric(df[col].str.replace(',', ''), errors='coerce')
-            
-            # Set date as index
-            df.set_index('date', inplace=True)
-            df.sort_index(inplace=True)
-            
+            df['passengers'] = pd.to_numeric(
+                df['passengers'].astype(str).str.replace(',', ''),
+                errors='coerce'
+            )
+            df = df.set_index('date').sort_index()
+
             return df
-            
+
         except Exception as e:
-            logger.error(f"Error fetching {year} data: {str(e)}")
-            raise
-    
-    def _load_from_cache(self, start_date: datetime, 
-                        end_date: datetime) -> Optional[pd.DataFrame]:
-        """Load data from cache if available and fresh."""
-        try:
-            years_needed = range(start_date.year, end_date.year + 1)
-            all_data = []
-            
-            for year in years_needed:
-                cache_file = self.data_dir / f"tsa_data_{year}.parquet"
-                if not cache_file.exists():
-                    return None
-                
-                # For current year, check if cache is too old
-                if year == datetime.now().year:
-                    cache_time = datetime.fromtimestamp(cache_file.stat().st_mtime)
-                    if datetime.now() - cache_time > timedelta(days=1):
-                        return None
-                
-                df = pd.read_parquet(cache_file)
-                all_data.append(df)
-            
-            combined_df = pd.concat(all_data)
-            mask = (combined_df.index >= start_date) & (combined_df.index <= end_date)
-            return combined_df[mask].copy()
-            
-        except Exception:
+            logger.error(f"Error fetching year {year}: {e}")
             return None
 
-if __name__ == "__main__":
-    # Example usage
-    collector = TSACollector()
-    
-    try:
-        # Fetch last 30 days of data
-        end_date = datetime.now() - timedelta(days=1)
-        start_date = end_date - timedelta(days=30)
-        
-        data = collector.fetch_data(start_date, end_date)
-        print("\nRaw TSA Checkpoint Data:")
-        print(data.head())
-        print("\nShape:", data.shape)
-        print("\nColumns:", data.columns.tolist())
-        
-    except Exception as e:
-        print(f"Error: {str(e)}")
+    def _load_cache(self) -> Optional[pd.DataFrame]:
+        """Load cached data if fresh enough."""
+        cache_file = self.data_dir / "tsa_data.parquet"
+        if not cache_file.exists():
+            return None
+
+        # Check if cache is less than 1 day old
+        cache_age = datetime.now() - datetime.fromtimestamp(cache_file.stat().st_mtime)
+        if cache_age > timedelta(days=1):
+            return None
+
+        try:
+            return pd.read_parquet(cache_file)
+        except Exception:
+            return None

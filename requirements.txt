@@ -41,4 +41,5 @@ notebook==6.5.4
 tqdm==4.65.0  # Progress bars
 pyarrow==12.0.1  # Fast parquet support
 plotly==5.15.0  # Interactive visualizations
+streamlit>=1.28.0  # Dashboard framework
 ipykernel==6.23.1  # Jupyter kernel

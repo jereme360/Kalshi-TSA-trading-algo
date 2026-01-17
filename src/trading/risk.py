@@ -114,7 +114,8 @@ class RiskManager:
             Tuple[bool, str]: (passes_checks, reason)
         """
         # Check daily loss limit
-        if self.daily_pnl.last() < -self.limits.max_daily_loss * self.initial_capital:
+        last_pnl = self.daily_pnl.iloc[-1] if len(self.daily_pnl) > 0 else 0
+        if last_pnl < -self.limits.max_daily_loss * self.initial_capital:
             return False, "Daily loss limit reached"
             
         # Check leverage
