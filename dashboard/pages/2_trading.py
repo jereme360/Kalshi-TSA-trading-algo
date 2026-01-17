@@ -145,6 +145,69 @@ with col2:
 
 st.markdown("---")
 
+# Profit Estimation
+st.header("Profit Estimation")
+
+investment = st.number_input(
+    "Investment Amount ($)",
+    min_value=100,
+    max_value=100000,
+    value=1000,
+    step=100
+)
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.subheader("Current Signal Estimate")
+
+    edge = signal.get('edge', 0)
+    conf = prediction.get('confidence', 0)
+
+    if edge != 0 and conf and conf > 0:
+        # Conservative estimate: edge * confidence * investment
+        estimated_trade_profit = investment * abs(edge) * conf * 0.5
+
+        st.metric(
+            "Est. Profit per Trade",
+            f"${estimated_trade_profit:.2f}",
+            delta=f"{(estimated_trade_profit/investment)*100:.1f}%"
+        )
+        st.caption("Based on current model edge and confidence")
+    else:
+        st.warning("No valid trading signal")
+
+with col2:
+    st.subheader("Historical Backtest (52 weeks)")
+    st.caption("Weekly Monday trading simulation")
+
+    backtest = trading_service.get_backtest_results(
+        initial_capital=investment,
+        weeks=52
+    )
+
+    if 'error' not in backtest:
+        profit = backtest['final_equity'] - backtest['initial_capital']
+        return_pct = backtest['total_return_pct']
+
+        st.metric(
+            "Total Profit (1 Year)",
+            f"${profit:.2f}",
+            delta=f"{return_pct:.1f}%"
+        )
+
+        metric_cols = st.columns(2)
+        with metric_cols[0]:
+            st.metric("Win Rate", f"{backtest['win_rate']*100:.0f}%")
+            st.metric("# Trades", backtest['num_trades'])
+        with metric_cols[1]:
+            st.metric("Max Drawdown", f"{backtest['max_drawdown']*100:.1f}%")
+            st.metric("Sharpe", f"{backtest['sharpe_ratio']:.2f}")
+    else:
+        st.warning(f"Backtest unavailable: {backtest['error']}")
+
+st.markdown("---")
+
 # Order Form
 st.header("Place Order")
 

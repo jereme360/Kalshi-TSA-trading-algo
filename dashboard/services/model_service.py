@@ -72,14 +72,14 @@ class ModelService:
             return self._get_sample_prediction()
 
     def _get_sample_prediction(self) -> Dict:
-        """Generate sample prediction for demo."""
-        base = 18_500_000  # Weekly passengers
+        """Return empty prediction when no model loaded."""
         return {
-            'prediction': base + np.random.normal(0, 200_000),
-            'uncertainty': 300_000,
-            'confidence': 0.82,
-            'lower_bound': base - 600_000,
-            'upper_bound': base + 600_000,
+            'prediction': None,
+            'uncertainty': None,
+            'confidence': None,
+            'lower_bound': None,
+            'upper_bound': None,
+            'error': 'No trained model loaded'
         }
 
     def get_model_weights(self) -> Dict[str, float]:
@@ -99,13 +99,8 @@ class ModelService:
             return self._get_sample_weights()
 
     def _get_sample_weights(self) -> Dict[str, float]:
-        """Generate sample weights for demo."""
-        return {
-            'SARIMAX': 0.35,
-            'GBM': 0.30,
-            'Exponential': 0.20,
-            'Neural Net': 0.15
-        }
+        """Return empty weights when no model loaded."""
+        return {}
 
     def get_accuracy_history(self, days: int = 30) -> pd.DataFrame:
         """
@@ -128,20 +123,8 @@ class ModelService:
             return self._get_sample_accuracy_history(days)
 
     def _get_sample_accuracy_history(self, days: int) -> pd.DataFrame:
-        """Generate sample accuracy history for demo."""
-        dates = pd.date_range(end=datetime.now(), periods=days, freq='D')
-
-        # Generate realistic accuracy pattern
-        base_accuracy = 0.85
-        noise = np.random.normal(0, 0.05, days)
-        trend = np.sin(np.arange(days) * 2 * np.pi / 30) * 0.03
-
-        return pd.DataFrame({
-            'accuracy': np.clip(base_accuracy + noise + trend, 0.5, 0.98),
-            'uncertainty': np.abs(np.random.normal(0.15, 0.03, days)),
-            'predicted': 18_500_000 + np.random.normal(0, 300_000, days),
-            'actual': 18_500_000 + np.random.normal(0, 250_000, days),
-        }, index=dates)
+        """Return empty DataFrame when no model loaded."""
+        return pd.DataFrame()
 
     def get_feature_importance(self) -> pd.DataFrame:
         """
@@ -163,20 +146,8 @@ class ModelService:
             return self._get_sample_feature_importance()
 
     def _get_sample_feature_importance(self) -> pd.DataFrame:
-        """Generate sample feature importance for demo."""
-        features = [
-            'passengers_lag_7', 'passengers_lag_1', 'day_of_week',
-            'is_holiday', 'days_to_holiday', 'month', 'weather_severity_index',
-            'avg_temperature', 'is_weekend', 'passengers_lag_14'
-        ]
-
-        importance = np.random.dirichlet(np.ones(len(features)) * 2)
-        importance = sorted(importance, reverse=True)
-
-        return pd.DataFrame({
-            'feature': features,
-            'importance': importance
-        }).set_index('feature')
+        """Return empty DataFrame when no model loaded."""
+        return pd.DataFrame()
 
     def get_recent_performance(self, lookback_days: int = 30) -> Dict:
         """
@@ -198,15 +169,8 @@ class ModelService:
             return self._get_sample_performance()
 
     def _get_sample_performance(self) -> Dict:
-        """Generate sample performance metrics for demo."""
-        return {
-            'mean_accuracy': 0.847,
-            'accuracy_std': 0.052,
-            'mean_uncertainty': 0.148,
-            'rmse': 285_000,
-            'mae': 215_000,
-            'hit_rate': 0.73
-        }
+        """Return empty performance when no model loaded."""
+        return {}
 
 
 @st.cache_resource

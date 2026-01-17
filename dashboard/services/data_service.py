@@ -80,14 +80,23 @@ def get_latest_tsa_value() -> Dict:
         return {'date': None, 'passengers': None, 'yoy_change': None}
 
     latest = df.iloc[-1]
-    yoy_change = None
 
-    if 'previous_year' in df.columns and latest['current_year'] > 0:
-        yoy_change = (latest['current_year'] - latest['previous_year']) / latest['previous_year']
+    # Get passenger count - handle both column naming conventions
+    if 'passengers' in df.columns:
+        passengers = latest['passengers']
+    elif 'current_year' in df.columns:
+        passengers = latest['current_year']
+    else:
+        return {'date': df.index[-1], 'passengers': None, 'yoy_change': None}
+
+    # Calculate YoY change if previous year data available
+    yoy_change = None
+    if 'previous_year' in df.columns and passengers > 0:
+        yoy_change = (passengers - latest['previous_year']) / latest['previous_year']
 
     return {
         'date': df.index[-1],
-        'passengers': latest['current_year'],
+        'passengers': passengers,
         'yoy_change': yoy_change
     }
 
@@ -104,7 +113,12 @@ def get_weekly_tsa_data() -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame()
 
-    weekly = df['current_year'].resample('W').sum()
+    # Handle both column naming conventions
+    col = 'passengers' if 'passengers' in df.columns else 'current_year'
+    if col not in df.columns:
+        return pd.DataFrame()
+
+    weekly = df[col].resample('W').sum()
     return weekly.to_frame(name='passengers')
 
 

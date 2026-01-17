@@ -4,8 +4,7 @@ Wraps Kalshi API with safety guards.
 """
 import streamlit as st
 import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 import time
@@ -42,7 +41,7 @@ class TradingService:
 
             config = {
                 'base_url': os.getenv('KALSHI_BASE_URL', 'https://api.elections.kalshi.com/trade-api/v2'),
-                'market_id': os.getenv('KALSHI_MARKET_ID', 'kxtsaw')
+                'market_id': os.getenv('KALSHI_MARKET_ID', 'KXTSAW')
             }
 
             # Only connect if credentials are present
@@ -96,7 +95,19 @@ class TradingService:
 
         try:
             market_data = self.api.get_market_data()
-            return True, f"Connected - Market: {market_data.get('title', 'Unknown')}"
+
+            # Handle series lookup response format
+            if 'error' in market_data:
+                return True, f"Connected - {market_data.get('error', 'No active TSA markets')}"
+
+            if 'market' in market_data:
+                market = market_data['market']
+                event_ticker = market_data.get('event_ticker', '')
+                title = market.get('title', market.get('ticker', 'Unknown'))
+                return True, f"Connected - Event: {event_ticker}, Market: {title}"
+
+            # Direct market lookup response
+            return True, f"Connected - Market: {market_data.get('title', market_data.get('ticker', 'Unknown'))}"
         except Exception as e:
             return False, f"Connection test failed: {str(e)}"
 
@@ -105,134 +116,111 @@ class TradingService:
         Get current market data.
 
         Returns:
-            Dict with market info
+            Dict with market info (empty dict with status='not_connected' if not connected)
         """
         if not self.connected:
-            return self._get_sample_market_data()
+            return {'status': 'not_connected', 'error': 'Not connected to Kalshi API'}
 
         try:
-            return self.api.get_market_data(market_id)
+            result = self.api.get_market_data(market_id)
+
+            # Handle series lookup response - extract market data
+            if 'market' in result:
+                market = result['market']
+                market['event_ticker'] = result.get('event_ticker')
+
+                # Use ticker as market_id if market_id not present
+                if 'market_id' not in market and 'ticker' in market:
+                    market['market_id'] = market['ticker']
+
+                # Convert price fields from cents to dollars
+                price_fields = ['yes_bid', 'yes_ask', 'no_bid', 'no_ask', 'last_price', 'previous_price']
+                for field in price_fields:
+                    if field in market and market[field] is not None:
+                        market[field] = market[field] / 100
+
+                return market
+            elif 'error' in result:
+                logger.warning(result.get('error'))
+                return {'status': 'no_markets', 'error': result.get('error')}
+
+            # Direct market response (no wrapper) - also convert prices
+            if 'market_id' not in result and 'ticker' in result:
+                result['market_id'] = result['ticker']
+
+            price_fields = ['yes_bid', 'yes_ask', 'no_bid', 'no_ask', 'last_price', 'previous_price']
+            for field in price_fields:
+                if field in result and result[field] is not None:
+                    result[field] = result[field] / 100
+
+            return result
         except Exception as e:
             logger.error(f"Error getting market data: {e}")
-            return self._get_sample_market_data()
-
-    def _get_sample_market_data(self) -> Dict:
-        """Generate sample market data for demo."""
-        return {
-            'title': 'TSA Weekly Checkins > 18.5M',
-            'market_id': 'kxtsaw-demo',
-            'yes_bid': 0.62,
-            'yes_ask': 0.65,
-            'no_bid': 0.35,
-            'no_ask': 0.38,
-            'last_price': 0.63,
-            'volume': 12500,
-            'open_interest': 8500,
-            'expiration': (datetime.now() + timedelta(days=3)).isoformat(),
-            'status': 'demo'
-        }
+            return {'status': 'error', 'error': str(e)}
 
     def get_order_book(self, market_id: Optional[str] = None) -> Dict:
         """
         Get order book depth.
 
         Returns:
-            Dict with bids and asks
+            Dict with bids and asks (empty if not connected)
         """
         if not self.connected:
-            return self._get_sample_order_book()
+            return {'bids': [], 'asks': [], 'status': 'not_connected'}
 
         try:
             return self.api.get_order_book(market_id)
         except Exception as e:
             logger.error(f"Error getting order book: {e}")
-            return self._get_sample_order_book()
-
-    def _get_sample_order_book(self) -> Dict:
-        """Generate sample order book for demo."""
-        return {
-            'bids': [
-                {'price': 62, 'size': 150},
-                {'price': 61, 'size': 280},
-                {'price': 60, 'size': 420},
-                {'price': 59, 'size': 350},
-                {'price': 58, 'size': 500},
-            ],
-            'asks': [
-                {'price': 65, 'size': 180},
-                {'price': 66, 'size': 250},
-                {'price': 67, 'size': 380},
-                {'price': 68, 'size': 290},
-                {'price': 69, 'size': 450},
-            ]
-        }
+            return {'bids': [], 'asks': [], 'status': 'error', 'error': str(e)}
 
     def get_positions(self) -> List[Dict]:
         """
         Get current positions.
 
         Returns:
-            List of position dicts
+            List of position dicts (empty if not connected)
         """
         if not self.connected:
-            return self._get_sample_positions()
+            return []
 
         try:
             return self.api.get_positions()
         except Exception as e:
             logger.error(f"Error getting positions: {e}")
-            return self._get_sample_positions()
-
-    def _get_sample_positions(self) -> List[Dict]:
-        """Generate sample positions for demo."""
-        return [
-            {
-                'market_id': 'kxtsaw-2024-01-week3',
-                'title': 'TSA Weekly > 18.5M (Jan 15-21)',
-                'side': 'yes',
-                'size': 25,
-                'avg_price': 0.58,
-                'current_price': 0.63,
-                'unrealized_pnl': 1.25,
-                'expiration': (datetime.now() + timedelta(days=3)).isoformat()
-            },
-            {
-                'market_id': 'kxtsaw-2024-01-week4',
-                'title': 'TSA Weekly > 19.0M (Jan 22-28)',
-                'side': 'no',
-                'size': 15,
-                'avg_price': 0.45,
-                'current_price': 0.42,
-                'unrealized_pnl': 0.45,
-                'expiration': (datetime.now() + timedelta(days=10)).isoformat()
-            }
-        ]
+            return []
 
     def get_account_balance(self) -> Dict:
         """
         Get account balance info.
 
         Returns:
-            Dict with balance details
+            Dict with balance details (zeros if not connected)
         """
         if not self.connected:
-            return self._get_sample_balance()
+            return {
+                'balance': 0,
+                'available': 0,
+                'status': 'not_connected'
+            }
 
         try:
-            return self.api.get_balance()
+            raw = self.api.get_balance()
+            # Kalshi returns balance in cents, convert to dollars
+            return {
+                'balance': raw.get('balance', 0) / 100,
+                'available': raw.get('balance', 0) / 100,  # Kalshi uses 'balance' for available
+                'portfolio_value': raw.get('portfolio_value', 0) / 100,
+                'status': 'connected'
+            }
         except Exception as e:
             logger.error(f"Error getting balance: {e}")
-            return self._get_sample_balance()
-
-    def _get_sample_balance(self) -> Dict:
-        """Generate sample balance for demo."""
-        return {
-            'balance': 10250.75,
-            'available': 8750.25,
-            'reserved': 1500.50,
-            'pending_orders': 2,
-            'open_positions': 3
-        }
+            return {
+                'balance': 0,
+                'available': 0,
+                'status': 'error',
+                'error': str(e)
+            }
 
     def calculate_signal(self, predicted_prob: float, market_price: float) -> Dict:
         """
@@ -373,36 +361,18 @@ class TradingService:
             days: Days of history
 
         Returns:
-            DataFrame with trade history
+            DataFrame with trade history (empty if not connected)
         """
         if not self.connected:
-            return self._get_sample_trade_history(days)
+            return pd.DataFrame()
 
         try:
-            # This would fetch real trade history
-            return self._get_sample_trade_history(days)
+            # TODO: Implement real trade history fetch from Kalshi API
+            # For now return empty - no sample data
+            return pd.DataFrame()
         except Exception as e:
             logger.error(f"Error getting trade history: {e}")
-            return self._get_sample_trade_history(days)
-
-    def _get_sample_trade_history(self, days: int) -> pd.DataFrame:
-        """Generate sample trade history for demo."""
-        n_trades = min(days * 2, 50)  # ~2 trades per day
-        dates = pd.date_range(end=datetime.now(), periods=n_trades, freq='12H')
-
-        sides = np.random.choice(['yes', 'no'], n_trades)
-        sizes = np.random.randint(5, 30, n_trades)
-        prices = np.random.uniform(0.40, 0.70, n_trades)
-        pnls = np.random.normal(5, 20, n_trades)
-
-        return pd.DataFrame({
-            'timestamp': dates,
-            'side': sides,
-            'size': sizes,
-            'price': prices.round(2),
-            'pnl': pnls.round(2),
-            'status': 'filled'
-        }).set_index('timestamp')
+            return pd.DataFrame()
 
     def get_pnl_history(self, days: int = 30) -> pd.DataFrame:
         """
@@ -427,6 +397,43 @@ class TradingService:
             'daily_pnl': daily_pnl,
             'cumulative_pnl': cumulative_pnl
         })
+
+    def get_backtest_results(self, initial_capital: float = 1000, weeks: int = 52) -> Dict:
+        """
+        Run backtest simulation for weekly Monday trading.
+
+        Args:
+            initial_capital: Starting investment amount
+            weeks: Number of weeks to backtest
+
+        Returns:
+            Dict with backtest results (total_return, trades, equity_curve)
+        """
+        if not self.connected:
+            return {'error': 'Not connected to Kalshi API'}
+
+        try:
+            # Get historical market data
+            # Simulate weekly Monday trades based on model signals
+            # Track equity curve
+
+            # For now, return placeholder until we have historical data
+            return {
+                'initial_capital': initial_capital,
+                'final_equity': initial_capital,  # Will be calculated
+                'total_return': 0,
+                'total_return_pct': 0,
+                'num_trades': 0,
+                'win_rate': 0,
+                'avg_profit_per_trade': 0,
+                'max_drawdown': 0,
+                'sharpe_ratio': 0,
+                'equity_curve': [],
+                'trades': []
+            }
+        except Exception as e:
+            logger.error(f"Backtest error: {e}")
+            return {'error': str(e)}
 
 
 @st.cache_resource

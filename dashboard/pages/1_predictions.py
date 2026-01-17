@@ -172,50 +172,10 @@ st.header("Feature Importance")
 importance_df = model_service.get_feature_importance()
 
 if not importance_df.empty:
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        top_n = st.slider("Show top N features", 5, 20, 10)
-        fig = create_feature_importance_chart(importance_df, top_n=top_n)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.subheader("Top Features")
-        top_features = importance_df.nlargest(10, 'importance')
-        for feat, row in top_features.iterrows():
-            st.write(f"**{feat}**: {row['importance']:.3f}")
-
+    fig = create_feature_importance_chart(importance_df, top_n=5)
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    st.info("Feature importance not available")
-
-st.markdown("---")
-
-# Model Info
-st.header("Model Information")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("Ensemble Components")
-
-    weights = model_service.get_model_weights()
-    for model_name, weight in weights.items():
-        progress = weight
-        st.write(f"**{model_name}**")
-        st.progress(progress, text=f"{weight * 100:.1f}%")
-
-with col2:
-    st.subheader("Model Status")
-
-    if model_service.model_loaded:
-        st.success("Model loaded and ready")
-        st.write("- Ensemble model with learned weights")
-        st.write("- Trained on historical TSA data")
-        st.write("- Updated daily with new data")
-    else:
-        st.warning("Using sample data for demonstration")
-        st.write("- Load a trained model to see real predictions")
-        st.write("- Train model using: `python -m src.models.train`")
+    st.warning("Feature importance not available - no trained model loaded")
 
 # Footer
 st.markdown("---")
