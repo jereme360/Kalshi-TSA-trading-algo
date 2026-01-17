@@ -12,6 +12,7 @@ sys.path.insert(0, str(project_root / 'src'))
 sys.path.insert(0, str(project_root))
 
 from dashboard.services.model_service import get_model_service
+from dashboard.services.trading_service import get_trading_service
 from dashboard.services.data_service import load_tsa_data, get_weekly_tsa_data
 from dashboard.components.charts import (
     create_prediction_chart,
@@ -19,6 +20,7 @@ from dashboard.components.charts import (
     create_model_weights_chart,
     create_feature_importance_chart
 )
+from src.trading.contract_selector import ContractSelector
 
 st.set_page_config(page_title="Predictions", page_icon="", layout="wide")
 
@@ -85,6 +87,60 @@ with col2:
     weights = model_service.get_model_weights()
     fig = create_model_weights_chart(weights)
     st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("---")
+
+# Contract Recommendation Section
+st.header("Recommended Trade")
+
+trading_service = get_trading_service()
+selector = ContractSelector(min_ev_threshold=0.02)
+
+# Get contracts from Kalshi (or generate simulated ones for demo)
+contracts = trading_service.get_available_contracts()
+
+if not contracts and prediction.get('prediction'):
+    # Generate simulated contracts for demo mode
+    pred_val = prediction.get('prediction')
+    base = round(pred_val / 500000) * 500000
+    contracts = [
+        {'ticker': f'DEMO-T{int(t)}', 'threshold': t, 'yes_price': 0.5, 'no_price': 0.5}
+        for t in [base - 1000000, base - 500000, base, base + 500000, base + 1000000]
+        if t > 0
+    ]
+
+if contracts and prediction.get('prediction') and prediction.get('uncertainty'):
+    recommendation = selector.select_contract(
+        prediction=prediction.get('prediction'),
+        prediction_std=prediction.get('uncertainty'),
+        contracts=contracts
+    )
+
+    if recommendation.get('contract'):
+        if recommendation['expected_value'] >= 0.02:
+            st.success(f"**{recommendation['side'].upper()}** on {recommendation['contract']}")
+        else:
+            st.warning(f"**{recommendation['side'].upper()}** on {recommendation['contract']} (Low EV)")
+
+        rec_cols = st.columns(3)
+        with rec_cols[0]:
+            st.metric("Confidence", f"{recommendation['confidence']:.0%}")
+        with rec_cols[1]:
+            st.metric("Expected Value", f"{recommendation['expected_value']:.1%}")
+        with rec_cols[2]:
+            # Calculate profit for $100 bet
+            ev_dollars = recommendation['expected_value'] * 100
+            st.metric("EV ($100 bet)", f"${ev_dollars:.2f}")
+
+        st.info(recommendation['reasoning'])
+    else:
+        st.warning("No positive EV contracts found - recommend HOLD")
+        st.caption(recommendation.get('reasoning', ''))
+else:
+    if not contracts:
+        st.info("Connect to Kalshi API to see contract recommendations")
+    else:
+        st.warning("Prediction data unavailable for contract selection")
 
 st.markdown("---")
 

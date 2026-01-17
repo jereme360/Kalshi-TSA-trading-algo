@@ -414,3 +414,121 @@ def create_risk_gauge(value: float, max_value: float,
     )
 
     return apply_dark_theme(fig)
+
+
+def create_equity_curve_chart(equity_curve: List) -> go.Figure:
+    """
+    Create equity curve line chart for backtest results.
+
+    Args:
+        equity_curve: List of (date, equity) tuples or dicts
+
+    Returns:
+        Plotly figure
+    """
+    if not equity_curve:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No backtest data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color=COLORS['gray'])
+        )
+        return apply_dark_theme(fig)
+
+    # Handle both tuple and dict formats
+    if isinstance(equity_curve[0], (list, tuple)):
+        dates = [item[0] for item in equity_curve]
+        equities = [item[1] for item in equity_curve]
+    else:
+        dates = [item.get('date') for item in equity_curve]
+        equities = [item.get('equity') for item in equity_curve]
+
+    df = pd.DataFrame({'date': dates, 'equity': equities})
+
+    # Calculate if we're up or down from start
+    if len(equities) > 0:
+        start_equity = equities[0]
+        final_equity = equities[-1]
+        is_profitable = final_equity >= start_equity
+    else:
+        is_profitable = True
+
+    fig = go.Figure()
+
+    # Main equity line
+    fig.add_trace(go.Scatter(
+        x=df['date'],
+        y=df['equity'],
+        mode='lines',
+        name='Equity',
+        line=dict(color=COLORS['green'] if is_profitable else COLORS['red'], width=2),
+        fill='tozeroy',
+        fillcolor='rgba(0,210,106,0.1)' if is_profitable else 'rgba(255,75,75,0.1)'
+    ))
+
+    # Add starting equity reference line
+    if len(equities) > 0:
+        fig.add_hline(
+            y=equities[0],
+            line_dash='dash',
+            line_color=COLORS['gray'],
+            annotation_text='Start'
+        )
+
+    fig.update_layout(
+        title='Cumulative Profit Over Time',
+        xaxis_title='Date',
+        yaxis_title='Equity ($)',
+        hovermode='x unified',
+        showlegend=False
+    )
+
+    return apply_dark_theme(fig)
+
+
+def create_weekly_profits_chart(weekly_profits: List[Dict]) -> go.Figure:
+    """
+    Create bar chart of weekly profits/losses.
+
+    Args:
+        weekly_profits: List of dicts with 'date' and 'profit' keys
+
+    Returns:
+        Plotly figure
+    """
+    if not weekly_profits:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No weekly data available",
+            xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False,
+            font=dict(size=16, color=COLORS['gray'])
+        )
+        return apply_dark_theme(fig)
+
+    df = pd.DataFrame(weekly_profits)
+
+    # Color bars based on profit/loss
+    colors = [COLORS['green'] if p >= 0 else COLORS['red'] for p in df['profit']]
+
+    fig = go.Figure()
+
+    fig.add_trace(go.Bar(
+        x=df['date'],
+        y=df['profit'],
+        marker_color=colors,
+        name='Weekly P&L'
+    ))
+
+    fig.add_hline(y=0, line_color=COLORS['gray'], line_width=1)
+
+    fig.update_layout(
+        title='Weekly Profit/Loss',
+        xaxis_title='Week',
+        yaxis_title='Profit ($)',
+        showlegend=False,
+        hovermode='x'
+    )
+
+    return apply_dark_theme(fig)

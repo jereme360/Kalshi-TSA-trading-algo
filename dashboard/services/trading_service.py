@@ -409,31 +409,109 @@ class TradingService:
         Returns:
             Dict with backtest results (total_return, trades, equity_curve)
         """
-        if not self.connected:
-            return {'error': 'Not connected to Kalshi API'}
-
         try:
-            # Get historical market data
-            # Simulate weekly Monday trades based on model signals
-            # Track equity curve
+            from backtesting.weekly_backtest import WeeklyBacktestEngine
+            from dashboard.services.data_service import load_tsa_data
 
-            # For now, return placeholder until we have historical data
+            # Load TSA data for backtest
+            tsa_data = load_tsa_data(days=1500)  # ~4 years
+
+            if tsa_data.empty:
+                return {'error': 'No TSA data available for backtest'}
+
+            # Run backtest
+            engine = WeeklyBacktestEngine(
+                initial_capital=initial_capital,
+                bet_size=min(initial_capital, 100)  # Bet up to $100 per week
+            )
+
+            results = engine.run(tsa_data, start_date='2022-01-03')
+
+            # Format for UI
             return {
-                'initial_capital': initial_capital,
-                'final_equity': initial_capital,  # Will be calculated
-                'total_return': 0,
-                'total_return_pct': 0,
-                'num_trades': 0,
-                'win_rate': 0,
-                'avg_profit_per_trade': 0,
-                'max_drawdown': 0,
-                'sharpe_ratio': 0,
-                'equity_curve': [],
-                'trades': []
+                'initial_capital': results.get('initial_capital', initial_capital),
+                'final_equity': results.get('final_equity', initial_capital),
+                'total_return': results.get('total_profit', 0),
+                'total_return_pct': (results.get('total_profit', 0) / initial_capital * 100) if initial_capital > 0 else 0,
+                'num_trades': results.get('num_weeks', 0),
+                'win_rate': results.get('win_rate', 0),
+                'avg_profit_per_trade': results.get('avg_profit', 0),
+                'max_drawdown': results.get('max_drawdown', 0),
+                'sharpe_ratio': results.get('sharpe_ratio', 0),
+                'equity_curve': results.get('equity_curve', []),
+                'trades': results.get('weekly_profits', [])
             }
         except Exception as e:
             logger.error(f"Backtest error: {e}")
             return {'error': str(e)}
+
+    def get_available_contracts(self) -> List[Dict]:
+        """
+        Get current TSA contracts with thresholds and prices.
+
+        Returns:
+            List of dicts with keys: ticker, threshold, yes_price, no_price
+        """
+        if not self.connected:
+            return []
+
+        try:
+            event_ticker = self.api.get_current_tsa_event()
+            if not event_ticker:
+                logger.warning("No current TSA event found")
+                return []
+
+            result = self.api._request('GET', f'/markets?event_ticker={event_ticker}')
+            markets = result.get('markets', [])
+
+            contracts = []
+            for market in markets:
+                ticker = market.get('ticker', '')
+                threshold = self._parse_threshold(ticker)
+
+                if threshold > 0:
+                    contracts.append({
+                        'ticker': ticker,
+                        'threshold': threshold,
+                        'yes_price': market.get('yes_bid', 50) / 100,  # Convert cents to dollars
+                        'no_price': market.get('no_bid', 50) / 100,
+                        'yes_ask': market.get('yes_ask', 50) / 100,
+                        'no_ask': market.get('no_ask', 50) / 100,
+                        'volume': market.get('volume', 0),
+                        'status': market.get('status', 'unknown')
+                    })
+
+            # Sort by threshold
+            contracts.sort(key=lambda x: x['threshold'])
+            return contracts
+
+        except Exception as e:
+            logger.error(f"Error getting available contracts: {e}")
+            return []
+
+    def _parse_threshold(self, ticker: str) -> int:
+        """
+        Parse threshold from Kalshi ticker.
+
+        Examples:
+            KXTSAW-26JAN18-T17500000 -> 17500000
+            KXTSAW-26JAN18-B17000000 -> 17000000
+        """
+        try:
+            # Look for -T or -B followed by numbers
+            if '-T' in ticker:
+                threshold_str = ticker.split('-T')[-1]
+            elif '-B' in ticker:
+                threshold_str = ticker.split('-B')[-1]
+            else:
+                return 0
+
+            # Remove any trailing characters and convert to int
+            threshold_str = ''.join(c for c in threshold_str if c.isdigit())
+            return int(threshold_str) if threshold_str else 0
+
+        except (ValueError, IndexError):
+            return 0
 
 
 @st.cache_resource

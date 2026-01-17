@@ -1,8 +1,9 @@
 """
 Ensemble models for TSA prediction combining multiple base predictors.
+Simplified 3-model ensemble: GBM + SARIMAX + Exponential Smoothing (KISS principle).
 """
 from src.models.base import BaseModel
-from src.models.predictors import SARIMAXModel, SimpleExponentialModel, GBMModel, NeuralNetModel
+from src.models.predictors import SARIMAXModel, SimpleExponentialModel, GBMModel
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Optional, Tuple
@@ -39,16 +40,18 @@ class EnsembleModel(BaseModel):
         self._initialize_models()
         
     def _initialize_models(self):
-        """Initialize all base models."""
+        """Initialize base models (GBM, SARIMAX, Exponential - no Neural Network)."""
         model_classes = {
             'sarimax': SARIMAXModel,
             'exponential': SimpleExponentialModel,
-            'gbm': GBMModel,
-            'neural': NeuralNetModel
+            'gbm': GBMModel
         }
-        
+
         for model_name, model_config in self.model_configs.items():
             model_type = model_config.pop('type')
+            if model_type == 'neural':
+                logger.info(f"Skipping neural model (removed for simplicity)")
+                continue
             if model_type in model_classes:
                 self.models[model_name] = model_classes[model_type](
                     name=f"{self.name}_{model_name}",

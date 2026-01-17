@@ -16,7 +16,7 @@ sys.path.insert(0, str(project_root))
 
 from dashboard.services.trading_service import get_trading_service
 from dashboard.services.model_service import get_model_service
-from dashboard.components.charts import create_order_book_chart
+from dashboard.components.charts import create_order_book_chart, create_equity_curve_chart, create_weekly_profits_chart
 
 st.set_page_config(page_title="Trading", page_icon="", layout="wide")
 
@@ -178,35 +178,75 @@ with col1:
         st.warning("No valid trading signal")
 
 with col2:
-    st.subheader("Historical Backtest (52 weeks)")
-    st.caption("Weekly Monday trading simulation")
+    st.subheader("Historical Backtest")
+    st.caption("Weekly Monday trading simulation from 2022")
 
     backtest = trading_service.get_backtest_results(
         initial_capital=investment,
-        weeks=52
+        weeks=156  # ~3 years
     )
 
     if 'error' not in backtest:
-        profit = backtest['final_equity'] - backtest['initial_capital']
-        return_pct = backtest['total_return_pct']
+        profit = backtest.get('total_return', 0)
+        return_pct = backtest.get('total_return_pct', 0)
 
         st.metric(
-            "Total Profit (1 Year)",
+            "Total Profit",
             f"${profit:.2f}",
             delta=f"{return_pct:.1f}%"
         )
 
         metric_cols = st.columns(2)
         with metric_cols[0]:
-            st.metric("Win Rate", f"{backtest['win_rate']*100:.0f}%")
-            st.metric("# Trades", backtest['num_trades'])
+            win_rate = backtest.get('win_rate', 0)
+            st.metric("Win Rate", f"{win_rate*100:.0f}%")
+            st.metric("# Weeks Tested", backtest.get('num_trades', 0))
         with metric_cols[1]:
-            st.metric("Max Drawdown", f"{backtest['max_drawdown']*100:.1f}%")
-            st.metric("Sharpe", f"{backtest['sharpe_ratio']:.2f}")
+            max_dd = backtest.get('max_drawdown', 0)
+            st.metric("Max Drawdown", f"{max_dd*100:.1f}%")
+            sharpe = backtest.get('sharpe_ratio', 0)
+            st.metric("Sharpe", f"{sharpe:.2f}")
     else:
-        st.warning(f"Backtest unavailable: {backtest['error']}")
+        st.warning(f"Backtest unavailable: {backtest.get('error', 'Unknown error')}")
 
 st.markdown("---")
+
+# Backtest Results Charts (if backtest ran successfully)
+if 'error' not in backtest and backtest.get('equity_curve'):
+    st.header("Backtest Results (Since 2022)")
+
+    # Equity curve chart
+    fig_equity = create_equity_curve_chart(backtest['equity_curve'])
+    st.plotly_chart(fig_equity, use_container_width=True)
+
+    # Weekly performance details in expander
+    with st.expander("Weekly Performance Details", expanded=False):
+        weekly_profits = backtest.get('trades', [])
+        if weekly_profits:
+            # Weekly profits chart
+            fig_weekly = create_weekly_profits_chart(weekly_profits)
+            st.plotly_chart(fig_weekly, use_container_width=True)
+
+            # Weekly profits table
+            st.subheader("Trade Log")
+            trades_df = pd.DataFrame(weekly_profits)
+            if not trades_df.empty:
+                # Format columns
+                display_cols = ['date', 'prediction', 'actual', 'contract', 'side', 'profit']
+                available_cols = [c for c in display_cols if c in trades_df.columns]
+                trades_display = trades_df[available_cols].copy()
+
+                # Format numbers
+                if 'prediction' in trades_display.columns:
+                    trades_display['prediction'] = trades_display['prediction'].apply(lambda x: f"{x:,.0f}")
+                if 'actual' in trades_display.columns:
+                    trades_display['actual'] = trades_display['actual'].apply(lambda x: f"{x:,.0f}")
+                if 'profit' in trades_display.columns:
+                    trades_display['profit'] = trades_display['profit'].apply(lambda x: f"${x:+.2f}")
+
+                st.dataframe(trades_display.tail(20), use_container_width=True)
+
+    st.markdown("---")
 
 # Order Form
 st.header("Place Order")
