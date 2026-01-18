@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 logger = logging.getLogger(__name__)
 
 # Safety constants
-MAX_CONTRACTS_PER_TRADE = 100
+MAX_CONTRACTS_PER_TRADE = 1000
 TRADE_COOLDOWN_SECONDS = 5
 MIN_CONFIRMATION_DELAY = 2
 
@@ -494,21 +494,33 @@ class TradingService:
         Parse threshold from Kalshi ticker.
 
         Examples:
-            KXTSAW-26JAN18-T17500000 -> 17500000
-            KXTSAW-26JAN18-B17000000 -> 17000000
+            KXTSAW-26JAN18-A2.80 -> 2800000 (Above 2.80M daily)
+            KXTSAW-26JAN18-B2.15 -> 2150000 (Below 2.15M daily)
+            KXTSAW-26JAN18-T17500000 -> 17500000 (old format)
         """
         try:
-            # Look for -T or -B followed by numbers
-            if '-T' in ticker:
+            # New format: -A or -B followed by decimal millions (e.g., A2.80 = 2.80M)
+            if '-A' in ticker:
+                threshold_str = ticker.split('-A')[-1]
+                # Convert decimal millions to integer (2.80 -> 2800000)
+                threshold_millions = float(threshold_str)
+                return int(threshold_millions * 1_000_000)
+            elif '-B' in ticker and '.' in ticker.split('-B')[-1]:
+                # New format with B (Below)
+                threshold_str = ticker.split('-B')[-1]
+                threshold_millions = float(threshold_str)
+                return int(threshold_millions * 1_000_000)
+            # Old format: -T or -B followed by full number
+            elif '-T' in ticker:
                 threshold_str = ticker.split('-T')[-1]
+                threshold_str = ''.join(c for c in threshold_str if c.isdigit())
+                return int(threshold_str) if threshold_str else 0
             elif '-B' in ticker:
                 threshold_str = ticker.split('-B')[-1]
+                threshold_str = ''.join(c for c in threshold_str if c.isdigit())
+                return int(threshold_str) if threshold_str else 0
             else:
                 return 0
-
-            # Remove any trailing characters and convert to int
-            threshold_str = ''.join(c for c in threshold_str if c.isdigit())
-            return int(threshold_str) if threshold_str else 0
 
         except (ValueError, IndexError):
             return 0

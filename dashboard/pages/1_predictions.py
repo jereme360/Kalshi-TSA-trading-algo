@@ -1,9 +1,11 @@
 """
-Predictions Page - Model accuracy and predictions display.
+Predictions Page - Model predictions and historical performance.
 """
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pathlib import Path
+from datetime import datetime
 import sys
 
 # Add paths
@@ -12,20 +14,16 @@ sys.path.insert(0, str(project_root / 'src'))
 sys.path.insert(0, str(project_root))
 
 from dashboard.services.model_service import get_model_service
-from dashboard.services.trading_service import get_trading_service
-from dashboard.services.data_service import load_tsa_data, get_weekly_tsa_data
+from dashboard.services.data_service import load_tsa_data
 from dashboard.components.charts import (
     create_prediction_chart,
-    create_accuracy_chart,
-    create_model_weights_chart,
     create_feature_importance_chart
 )
-from src.trading.contract_selector import ContractSelector
 
 st.set_page_config(page_title="Predictions", page_icon="", layout="wide")
 
-st.title("Model Predictions")
-st.markdown("View prediction accuracy, model performance, and forecasts")
+st.title("TSA Daily Predictions")
+st.caption("Kalshi markets trade on daily averages, not weekly totals")
 
 
 def format_number(num, decimals=0):
@@ -39,200 +37,246 @@ def format_number(num, decimals=0):
 # Get services
 model_service = get_model_service()
 
-# Current Prediction Section
-st.header("Current Forecast")
+# =============================================================================
+# CURRENT FORECAST SECTION
+# =============================================================================
+st.header("This Week's Forecast")
 
-col1, col2 = st.columns([2, 1])
+prediction = model_service.get_prediction(None)
 
-with col1:
-    prediction = model_service.get_prediction(None)
+# Convert weekly to daily averages (Kalshi trades on daily averages)
+weekly_pred = prediction.get('prediction')
+weekly_lower = prediction.get('lower_bound')
+weekly_upper = prediction.get('upper_bound')
+weekly_uncertainty = prediction.get('uncertainty')
 
-    pred_cols = st.columns(4)
+daily_pred = weekly_pred / 7 if weekly_pred else None
+daily_lower = weekly_lower / 7 if weekly_lower else None
+daily_upper = weekly_upper / 7 if weekly_upper else None
+daily_uncertainty = weekly_uncertainty / 7 if weekly_uncertainty else None
 
-    with pred_cols[0]:
+pred_cols = st.columns(4)
+
+with pred_cols[0]:
+    st.metric(
+        "Predicted Daily Avg",
+        format_number(daily_pred)
+    )
+
+with pred_cols[1]:
+    conf = prediction.get('confidence', 0)
+    st.metric(
+        "Confidence",
+        f"{conf * 100:.1f}%" if conf else "N/A"
+    )
+
+with pred_cols[2]:
+    if daily_lower and daily_upper:
+        # Use millions format to avoid truncation
+        lower_m = daily_lower / 1_000_000
+        upper_m = daily_upper / 1_000_000
         st.metric(
-            "Predicted Weekly Passengers",
-            format_number(prediction.get('prediction'))
+            "95% Range",
+            f"{lower_m:.2f}M - {upper_m:.2f}M"
         )
 
-    with pred_cols[1]:
-        conf = prediction.get('confidence', 0)
+with pred_cols[3]:
+    if daily_uncertainty:
         st.metric(
-            "Confidence",
-            f"{conf * 100:.1f}%" if conf else "N/A"
+            "Uncertainty (±)",
+            f"±{format_number(daily_uncertainty)}",
+            help="Standard deviation of prediction"
         )
-
-    with pred_cols[2]:
-        unc = prediction.get('uncertainty')
-        st.metric(
-            "Uncertainty",
-            format_number(unc) if unc else "N/A"
-        )
-
-    with pred_cols[3]:
-        lower = prediction.get('lower_bound')
-        upper = prediction.get('upper_bound')
-        if lower and upper:
-            st.metric(
-                "95% CI Range",
-                f"{format_number(upper - lower)}"
-            )
-
-    st.info(f"""
-    **Forecast Range**: {format_number(prediction.get('lower_bound'))} - {format_number(prediction.get('upper_bound'))}
-    """)
-
-with col2:
-    # Model weights pie chart
-    weights = model_service.get_model_weights()
-    fig = create_model_weights_chart(weights)
-    st.plotly_chart(fig, use_container_width=True)
 
 st.markdown("---")
 
-# Contract Recommendation Section
-st.header("Recommended Trade")
+# =============================================================================
+# HISTORICAL PERFORMANCE SECTION
+# =============================================================================
+st.header("Historical Performance (Since Jan 2023)")
 
-trading_service = get_trading_service()
-selector = ContractSelector(min_ev_threshold=0.02)
+# Load historical data and compute predictions
+@st.cache_data(ttl=3600)
+def get_historical_performance():
+    """Compute historical predictions vs actuals from Jan 2023."""
+    tsa_data = load_tsa_data(days=2000)  # Get all available data
+    if tsa_data.empty:
+        return pd.DataFrame()
 
-# Get contracts from Kalshi (or generate simulated ones for demo)
-contracts = trading_service.get_available_contracts()
+    # Get passenger column
+    col = 'passengers' if 'passengers' in tsa_data.columns else 'current_year'
+    if col not in tsa_data.columns:
+        return pd.DataFrame()
 
-if not contracts and prediction.get('prediction'):
-    # Generate simulated contracts for demo mode
-    pred_val = prediction.get('prediction')
-    base = round(pred_val / 500000) * 500000
-    contracts = [
-        {'ticker': f'DEMO-T{int(t)}', 'threshold': t, 'yes_price': 0.5, 'no_price': 0.5}
-        for t in [base - 1000000, base - 500000, base, base + 500000, base + 1000000]
-        if t > 0
-    ]
+    # Calculate weekly totals (use ALL data for predictions)
+    weekly_data = tsa_data[col].resample('W-SUN').sum()
 
-if contracts and prediction.get('prediction') and prediction.get('uncertainty'):
-    recommendation = selector.select_contract(
-        prediction=prediction.get('prediction'),
-        prediction_std=prediction.get('uncertainty'),
-        contracts=contracts
-    )
+    if len(weekly_data) < 60:
+        return pd.DataFrame()
 
-    if recommendation.get('contract'):
-        if recommendation['expected_value'] >= 0.02:
-            st.success(f"**{recommendation['side'].upper()}** on {recommendation['contract']}")
-        else:
-            st.warning(f"**{recommendation['side'].upper()}** on {recommendation['contract']} (Low EV)")
+    results = []
 
-        rec_cols = st.columns(3)
-        with rec_cols[0]:
-            st.metric("Confidence", f"{recommendation['confidence']:.0%}")
-        with rec_cols[1]:
-            st.metric("Expected Value", f"{recommendation['expected_value']:.1%}")
-        with rec_cols[2]:
-            # Calculate profit for $100 bet
-            ev_dollars = recommendation['expected_value'] * 100
-            st.metric("EV ($100 bet)", f"${ev_dollars:.2f}")
+    # Start from week 52 (need history) and compute for all weeks
+    for i in range(52, len(weekly_data) - 1):  # Skip last (potentially incomplete) week
+        try:
+            week_date = weekly_data.index[i]
 
-        st.info(recommendation['reasoning'])
-    else:
-        st.warning("No positive EV contracts found - recommend HOLD")
-        st.caption(recommendation.get('reasoning', ''))
-else:
-    if not contracts:
-        st.info("Connect to Kalshi API to see contract recommendations")
-    else:
-        st.warning("Prediction data unavailable for contract selection")
+            # Only OUTPUT results from Jan 2023 onwards
+            if week_date < pd.Timestamp('2023-01-01'):
+                continue
 
-st.markdown("---")
+            actual = weekly_data.iloc[i]
 
-# Accuracy Over Time Section
-st.header("Model Accuracy")
+            # Skip incomplete weeks (less than 10M likely means incomplete data)
+            if actual < 10000000:
+                continue
 
-# Controls
-col1, col2 = st.columns([1, 3])
+            # Prediction: weighted combination of same-week-LY + recent trend
+            same_week_ly = weekly_data.iloc[i - 52]
+            recent_avg = weekly_data.iloc[max(0, i-4):i].mean()
 
-with col1:
-    lookback_days = st.selectbox(
-        "Lookback Period",
-        options=[7, 14, 30, 60, 90],
-        index=2,
-        format_func=lambda x: f"{x} days"
-    )
+            # YoY adjustment
+            if i >= 104:
+                prev_year_avg = weekly_data.iloc[i-104:i-52].mean()
+                curr_year_avg = weekly_data.iloc[i-52:i].mean()
+                yoy_factor = curr_year_avg / prev_year_avg if prev_year_avg > 0 else 1.0
+            else:
+                yoy_factor = 1.0
 
-    rolling_window = st.slider(
-        "Rolling Average Window",
-        min_value=3,
-        max_value=14,
-        value=7
-    )
+            predicted = 0.3 * same_week_ly * yoy_factor + 0.7 * recent_avg
 
-# Get accuracy history
-accuracy_df = model_service.get_accuracy_history(days=lookback_days)
+            # Accuracy
+            accuracy = 1 - abs(predicted - actual) / actual
+            accuracy = max(0, min(1, accuracy))
 
-if not accuracy_df.empty:
-    # Accuracy chart
-    fig = create_accuracy_chart(accuracy_df, window=rolling_window)
-    st.plotly_chart(fig, use_container_width=True)
+            results.append({
+                'date': week_date,
+                'predicted': predicted,
+                'actual': actual,
+                'accuracy': accuracy,
+                'error': predicted - actual,
+                'error_pct': (predicted - actual) / actual * 100
+            })
 
-    # Accuracy metrics
-    st.subheader("Accuracy Metrics")
+        except Exception:
+            continue
 
-    metric_cols = st.columns(4)
+    if not results:
+        return pd.DataFrame()
 
-    perf = model_service.get_recent_performance(lookback_days)
+    df = pd.DataFrame(results)
+    df.set_index('date', inplace=True)
+    return df
+
+
+historical_df = get_historical_performance()
+
+if not historical_df.empty:
+    # Summary metrics
+    metric_cols = st.columns(5)
 
     with metric_cols[0]:
         st.metric(
-            "Mean Accuracy",
-            f"{perf.get('mean_accuracy', 0) * 100:.1f}%"
+            "Weeks Analyzed",
+            len(historical_df)
         )
 
     with metric_cols[1]:
+        mean_acc = historical_df['accuracy'].mean()
         st.metric(
-            "Accuracy Std Dev",
-            f"{perf.get('accuracy_std', 0) * 100:.1f}%"
+            "Mean Accuracy",
+            f"{mean_acc * 100:.1f}%"
         )
 
     with metric_cols[2]:
-        rmse = perf.get('rmse', 0)
+        # Convert weekly RMSE to daily (divide by 7)
+        rmse_daily = np.sqrt((historical_df['error'] ** 2).mean()) / 7
         st.metric(
-            "RMSE",
-            format_number(rmse) if rmse else "N/A"
+            "RMSE (Daily)",
+            format_number(rmse_daily)
         )
 
     with metric_cols[3]:
-        mae = perf.get('mae', 0)
+        mae_daily = historical_df['error'].abs().mean() / 7
         st.metric(
-            "MAE",
-            format_number(mae) if mae else "N/A"
+            "MAE (Daily)",
+            format_number(mae_daily)
         )
 
-else:
-    st.warning("No accuracy history available")
+    with metric_cols[4]:
+        mape = (historical_df['error'].abs() / historical_df['actual']).mean() * 100
+        st.metric(
+            "MAPE",
+            f"{mape:.1f}%"
+        )
 
-st.markdown("---")
+    st.markdown("---")
 
-# Predictions vs Actuals
-st.header("Predictions vs Actuals")
+    # Predictions vs Actuals Chart (convert to daily for display)
+    st.subheader("Predicted vs Actual Daily Average")
 
-if not accuracy_df.empty and 'predicted' in accuracy_df.columns and 'actual' in accuracy_df.columns:
-    fig = create_prediction_chart(accuracy_df)
+    # Create daily version of the data for charting
+    daily_hist_df = historical_df.copy()
+    daily_hist_df['predicted'] = daily_hist_df['predicted'] / 7
+    daily_hist_df['actual'] = daily_hist_df['actual'] / 7
+
+    fig = create_prediction_chart(daily_hist_df)
     st.plotly_chart(fig, use_container_width=True)
+
+    # Recent performance table (show daily averages)
+    st.subheader("Recent Weeks (Daily Averages)")
+
+    recent_df = historical_df.tail(12).copy()
+    recent_df = recent_df.reset_index()
+    recent_df['date'] = recent_df['date'].dt.strftime('%Y-%m-%d')
+    # Convert to daily averages
+    recent_df['predicted'] = recent_df['predicted'].apply(lambda x: f"{x/7:,.0f}")
+    recent_df['actual'] = recent_df['actual'].apply(lambda x: f"{x/7:,.0f}")
+    recent_df['accuracy'] = recent_df['accuracy'].apply(lambda x: f"{x*100:.1f}%")
+    recent_df['error_pct'] = recent_df['error_pct'].apply(lambda x: f"{x:+.1f}%")
+
+    st.dataframe(
+        recent_df[['date', 'predicted', 'actual', 'accuracy', 'error_pct']].rename(columns={
+            'date': 'Week Ending',
+            'predicted': 'Predicted Daily',
+            'actual': 'Actual Daily',
+            'accuracy': 'Accuracy',
+            'error_pct': 'Error %'
+        }),
+        use_container_width=True,
+        hide_index=True
+    )
+
 else:
-    st.info("Prediction comparison chart will appear once data is available")
+    st.warning("Historical data not available. TSA data may still be loading.")
 
 st.markdown("---")
 
-# Feature Importance
-st.header("Feature Importance")
+# =============================================================================
+# FEATURE IMPORTANCE SECTION
+# =============================================================================
+st.header("Prediction Factors")
 
 importance_df = model_service.get_feature_importance()
 
 if not importance_df.empty:
-    fig = create_feature_importance_chart(importance_df, top_n=5)
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("Feature importance not available - no trained model loaded")
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        fig = create_feature_importance_chart(importance_df, top_n=6)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.markdown("""
+        **Key Factors:**
+        - **Recent Weekly Avg**: Most recent 4-week average
+        - **Same Week Last Year**: Seasonality adjustment
+        - **YoY Growth Trend**: Year-over-year volume changes
+        - **Weekly Seasonality**: Day-of-week patterns
+        - **Holiday Proximity**: Impact of holidays
+        - **Recent Volatility**: Short-term variance
+        """)
 
 # Footer
 st.markdown("---")
-st.caption("Predictions are updated when new TSA data becomes available (typically daily)")
+st.caption("Data updated daily from TSA checkpoint data. Predictions use historical patterns and trend analysis.")

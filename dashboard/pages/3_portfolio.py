@@ -189,7 +189,7 @@ if positions:
     with col2:
         fig = create_risk_gauge(
             max_position,
-            100,  # Max 100 contracts
+            1000,  # Max 1000 contracts
             "Largest Position"
         )
         st.plotly_chart(fig, use_container_width=True)

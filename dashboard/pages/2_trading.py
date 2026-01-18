@@ -1,5 +1,5 @@
 """
-Trading Page - Place bets and view market data.
+Trading Page - View market data and place trades.
 """
 import streamlit as st
 import pandas as pd
@@ -16,12 +16,13 @@ sys.path.insert(0, str(project_root))
 
 from dashboard.services.trading_service import get_trading_service
 from dashboard.services.model_service import get_model_service
-from dashboard.components.charts import create_order_book_chart, create_equity_curve_chart, create_weekly_profits_chart
+from dashboard.components.charts import create_order_book_chart
+from src.trading.contract_selector import ContractSelector
+from scipy.stats import norm
 
 st.set_page_config(page_title="Trading", page_icon="", layout="wide")
 
 st.title("Trading")
-st.markdown("Place trades on Kalshi TSA markets")
 
 # Get services
 trading_service = get_trading_service()
@@ -31,47 +32,135 @@ model_service = get_model_service()
 if trading_service.connected:
     st.success("Connected to Kalshi API")
 else:
-    st.warning("Demo Mode - Orders will not be executed")
+    st.warning("Not connected to Kalshi - Demo Mode")
 
 st.markdown("---")
 
-# Market Data Section
-st.header("Market Data")
+# =============================================================================
+# GET PREDICTION AND RECOMMENDATION FIRST
+# =============================================================================
+# Get model prediction and convert to daily average
+prediction = model_service.get_prediction(None)
+weekly_pred = prediction.get('prediction')
+weekly_uncertainty = prediction.get('uncertainty')
+confidence = prediction.get('confidence', 0) or 0
 
-market_data = trading_service.get_market_data()
+# Convert to daily (Kalshi trades on daily averages)
+daily_pred = weekly_pred / 7 if weekly_pred else None
+daily_std = weekly_uncertainty / 7 if weekly_uncertainty else None
 
-col1, col2, col3 = st.columns(3)
+# Get available contracts from Kalshi
+contracts = trading_service.get_available_contracts()
 
-with col1:
-    st.subheader("Market Info")
-    st.write(f"**Market**: {market_data.get('title', 'TSA Weekly')}")
-    st.write(f"**Market ID**: {market_data.get('market_id', 'N/A')}")
+if not contracts and daily_pred:
+    # Demo mode: generate sample contracts based on typical thresholds
+    base = round(daily_pred / 50000) * 50000
+    contracts = [
+        {'ticker': f'DEMO-{int(t/1000000)}.{int((t%1000000)/100000):02d}M', 'threshold': t, 'yes_price': 0.5, 'no_price': 0.5}
+        for t in [base - 100000, base - 50000, base, base + 50000, base + 100000, base + 150000]
+        if t > 0
+    ]
 
-    expiration = market_data.get('expiration')
-    if expiration:
-        exp_date = datetime.fromisoformat(expiration.replace('Z', '+00:00'))
-        days_to_exp = (exp_date - datetime.now(exp_date.tzinfo)).days
-        st.write(f"**Expires**: {days_to_exp} days")
+# Get recommendation
+recommendation = None
+rec_contract = None
+if contracts and daily_pred and daily_std:
+    selector = ContractSelector(min_ev_threshold=0.01)
+    recommendation = selector.select_contract(
+        prediction=daily_pred,
+        prediction_std=daily_std,
+        contracts=contracts
+    )
+    if recommendation.get('contract'):
+        rec_contract = next((c for c in contracts if c['ticker'] == recommendation['contract']), None)
 
-with col2:
-    st.subheader("Prices")
+# =============================================================================
+# OPTIMAL CONTRACT SECTION (Replaces generic Current Market)
+# =============================================================================
+st.header("Optimal Contract")
 
-    yes_bid = market_data.get('yes_bid', 0)
-    yes_ask = market_data.get('yes_ask', 0)
-    spread = yes_ask - yes_bid
+if recommendation and rec_contract:
+    threshold = rec_contract['threshold']
+    side = recommendation['side'].upper()
+    ev = recommendation['expected_value']
+    rec_confidence = recommendation['confidence']
 
-    st.metric("YES Bid/Ask", f"${yes_bid:.2f} / ${yes_ask:.2f}")
-    st.write(f"Spread: ${spread:.2f}")
-    st.write(f"Last: ${market_data.get('last_price', 0):.2f}")
+    col1, col2, col3 = st.columns(3)
 
-with col3:
-    st.subheader("Volume")
-    st.metric("Volume", f"{market_data.get('volume', 0):,}")
-    st.metric("Open Interest", f"{market_data.get('open_interest', 0):,}")
+    with col1:
+        st.subheader("Recommendation")
+        if ev >= 0.02:
+            st.success(f"### BUY {side}")
+        elif ev >= 0:
+            st.warning(f"### BUY {side} (Low EV)")
+        else:
+            st.info("### HOLD")
+
+        st.write(f"**Threshold**: {threshold:,}")
+        st.write(f"**Ticker**: {rec_contract['ticker']}")
+
+    with col2:
+        st.subheader("Contract Prices")
+        yes_price = rec_contract.get('yes_price', 0.5)
+        no_price = rec_contract.get('no_price', 0.5)
+        yes_ask = rec_contract.get('yes_ask', yes_price)
+        no_ask = rec_contract.get('no_ask', no_price)
+
+        st.metric("YES Price", f"${yes_price:.2f} / ${yes_ask:.2f}", help="Bid / Ask")
+        st.metric("NO Price", f"${no_price:.2f} / ${no_ask:.2f}", help="Bid / Ask")
+
+    with col3:
+        st.subheader("Trade Metrics")
+        st.metric("Expected Value", f"{ev:+.1%}")
+        st.metric("Confidence", f"{rec_confidence:.0%}")
+        st.write(f"**Volume**: {rec_contract.get('volume', 0):,}")
+
+    st.caption(recommendation.get('reasoning', ''))
+
+else:
+    # Fallback to generic market data if no recommendation
+    market_data = trading_service.get_market_data()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.subheader("Market Info")
+        market_title = market_data.get('title', 'TSA Weekly')
+        market_id = market_data.get('market_id', 'N/A')
+        st.write(f"**Market**: {market_title}")
+        st.write(f"**Ticker**: {market_id}")
+
+        expiration = market_data.get('expiration')
+        if expiration:
+            try:
+                exp_date = datetime.fromisoformat(expiration.replace('Z', '+00:00'))
+                days_to_exp = (exp_date - datetime.now(exp_date.tzinfo)).days
+                st.write(f"**Expires**: {days_to_exp} days")
+            except:
+                pass
+
+    with col2:
+        st.subheader("Prices")
+        yes_bid = market_data.get('yes_bid', 0) or 0
+        yes_ask = market_data.get('yes_ask', 0) or 0
+        spread = yes_ask - yes_bid if yes_ask and yes_bid else 0
+
+        st.metric("YES Bid/Ask", f"${yes_bid:.2f} / ${yes_ask:.2f}")
+        st.write(f"Spread: ${spread:.2f}")
+        st.write(f"Last: ${market_data.get('last_price', 0) or 0:.2f}")
+
+    with col3:
+        st.subheader("Volume")
+        st.metric("Volume", f"{market_data.get('volume', 0) or 0:,}")
+        st.metric("Open Interest", f"{market_data.get('open_interest', 0) or 0:,}")
+
+    st.info("No contract recommendation available - connect to Kalshi or wait for prediction")
 
 st.markdown("---")
 
-# Order Book
+# =============================================================================
+# ORDER BOOK SECTION
+# =============================================================================
 st.header("Order Book")
 
 order_book = trading_service.get_order_book()
@@ -88,203 +177,157 @@ with col2:
     bids = order_book.get('bids', [])[:5]
     asks = order_book.get('asks', [])[:5]
 
-    st.write("**Bids**")
-    for bid in bids:
-        st.write(f"${bid['price']/100:.2f} - {bid['size']} contracts")
+    if bids:
+        st.write("**Bids**")
+        for bid in bids:
+            st.write(f"${bid['price']/100:.2f} - {bid['size']} contracts")
+    else:
+        st.write("**Bids**: None")
 
     st.write("")
-    st.write("**Asks**")
-    for ask in asks:
-        st.write(f"${ask['price']/100:.2f} - {ask['size']} contracts")
+
+    if asks:
+        st.write("**Asks**")
+        for ask in asks:
+            st.write(f"${ask['price']/100:.2f} - {ask['size']} contracts")
+    else:
+        st.write("**Asks**: None")
 
 st.markdown("---")
 
-# Trading Signal
-st.header("Trading Signal")
+# =============================================================================
+# MODEL PREDICTION SUMMARY
+# =============================================================================
+st.header("Model Prediction")
 
-col1, col2 = st.columns([1, 1])
+col1, col2, col3 = st.columns(3)
 
 with col1:
-    # Get model prediction
-    prediction = model_service.get_prediction(None)
-    pred_value = prediction.get('prediction', 18_500_000)
-
-    # Convert to probability (simplified)
-    threshold = 18_500_000  # This should come from the market definition
-    predicted_prob = 1 / (1 + np.exp(-(pred_value - threshold) / 500_000))
-
-    market_price = market_data.get('yes_bid', 0.5)
-    signal = trading_service.calculate_signal(predicted_prob, market_price)
-
-    # Display signal
-    if signal['signal'] == 'HOLD':
-        st.info(f"### Signal: **{signal['signal']}**")
-    elif 'YES' in signal['signal']:
-        st.success(f"### Signal: **{signal['signal']}**")
+    if daily_pred:
+        st.metric("Predicted Daily Avg", f"{daily_pred:,.0f}")
     else:
-        st.error(f"### Signal: **{signal['signal']}**")
-
-    st.write(f"**Model Probability**: {signal['predicted_prob']:.1%}")
-    st.write(f"**Market Price**: {signal['market_price']:.1%}")
-    st.write(f"**Edge**: {signal['edge_pct']:+.1f}%")
-    st.write(f"**Signal Strength**: {signal['strength']*100:.0f}%")
+        st.metric("Predicted Daily Avg", "N/A")
 
 with col2:
-    st.subheader("Confidence")
-    confidence = prediction.get('confidence', 0)
-
-    # Confidence gauge
-    st.metric("Model Confidence", f"{confidence*100:.1f}%")
-
-    if confidence > 0.8:
-        st.success("High confidence prediction")
-    elif confidence > 0.6:
-        st.info("Moderate confidence prediction")
+    if daily_std:
+        st.metric("Uncertainty (1 std)", f"±{daily_std:,.0f}")
     else:
-        st.warning("Low confidence - trade with caution")
+        st.metric("Uncertainty", "N/A")
+
+with col3:
+    st.metric("Confidence", f"{confidence*100:.1f}%")
 
 st.markdown("---")
 
-# Profit Estimation
-st.header("Profit Estimation")
+# =============================================================================
+# ALL CONTRACTS TABLE
+# =============================================================================
+st.header("Contract Analysis")
 
-investment = st.number_input(
-    "Investment Amount ($)",
-    min_value=100,
-    max_value=100000,
-    value=1000,
-    step=100
-)
+if contracts and daily_pred and daily_std:
+    st.write(f"**Model Prediction**: {daily_pred:,.0f} daily average (±{daily_std:,.0f})")
 
-col1, col2 = st.columns(2)
+    # Build analysis table
+    analysis_data = []
+    for contract in contracts:
+        threshold = contract['threshold']
+        yes_price = contract.get('yes_price', 0.5)
+        no_price = contract.get('no_price', 0.5)
 
-with col1:
-    st.subheader("Current Signal Estimate")
+        # Calculate probability that actual > threshold
+        prob_above = 1 - norm.cdf(threshold, loc=daily_pred, scale=daily_std)
+        prob_below = 1 - prob_above
 
-    edge = signal.get('edge', 0)
-    conf = prediction.get('confidence', 0)
+        # Calculate EV for YES and NO
+        ev_yes = prob_above - yes_price
+        ev_no = prob_below - no_price
 
-    if edge != 0 and conf and conf > 0:
-        # Conservative estimate: edge * confidence * investment
-        estimated_trade_profit = investment * abs(edge) * conf * 0.5
+        # Determine best side
+        if ev_yes > ev_no and ev_yes > 0:
+            best_side = "YES"
+            best_ev = ev_yes
+        elif ev_no > ev_yes and ev_no > 0:
+            best_side = "NO"
+            best_ev = ev_no
+        else:
+            best_side = "-"
+            best_ev = max(ev_yes, ev_no)
 
-        st.metric(
-            "Est. Profit per Trade",
-            f"${estimated_trade_profit:.2f}",
-            delta=f"{(estimated_trade_profit/investment)*100:.1f}%"
-        )
-        st.caption("Based on current model edge and confidence")
-    else:
-        st.warning("No valid trading signal")
+        analysis_data.append({
+            'Threshold': f"{threshold:,}",
+            'YES Price': f"${yes_price:.2f}",
+            'NO Price': f"${no_price:.2f}",
+            'P(Above)': f"{prob_above:.0%}",
+            'P(Below)': f"{prob_below:.0%}",
+            'Best Side': best_side,
+            'EV': f"{best_ev:+.1%}"
+        })
 
-with col2:
-    st.subheader("Historical Backtest")
-    st.caption("Weekly Monday trading simulation from 2022")
+    analysis_df = pd.DataFrame(analysis_data)
+    st.dataframe(analysis_df, use_container_width=True, hide_index=True)
 
-    backtest = trading_service.get_backtest_results(
-        initial_capital=investment,
-        weeks=156  # ~3 years
-    )
+    # Highlight the best contract
+    best_row = max(analysis_data, key=lambda x: float(x['EV'].replace('%', '').replace('+', '')) / 100)
+    if float(best_row['EV'].replace('%', '').replace('+', '')) > 0:
+        st.success(f"**Best Trade**: BUY {best_row['Best Side']} on {best_row['Threshold']} threshold (EV: {best_row['EV']})")
 
-    if 'error' not in backtest:
-        profit = backtest.get('total_return', 0)
-        return_pct = backtest.get('total_return_pct', 0)
-
-        st.metric(
-            "Total Profit",
-            f"${profit:.2f}",
-            delta=f"{return_pct:.1f}%"
-        )
-
-        metric_cols = st.columns(2)
-        with metric_cols[0]:
-            win_rate = backtest.get('win_rate', 0)
-            st.metric("Win Rate", f"{win_rate*100:.0f}%")
-            st.metric("# Weeks Tested", backtest.get('num_trades', 0))
-        with metric_cols[1]:
-            max_dd = backtest.get('max_drawdown', 0)
-            st.metric("Max Drawdown", f"{max_dd*100:.1f}%")
-            sharpe = backtest.get('sharpe_ratio', 0)
-            st.metric("Sharpe", f"{sharpe:.2f}")
-    else:
-        st.warning(f"Backtest unavailable: {backtest.get('error', 'Unknown error')}")
+else:
+    st.info("Connect to Kalshi API or wait for predictions to see contract analysis")
 
 st.markdown("---")
 
-# Backtest Results Charts (if backtest ran successfully)
-if 'error' not in backtest and backtest.get('equity_curve'):
-    st.header("Backtest Results (Since 2022)")
-
-    # Equity curve chart
-    fig_equity = create_equity_curve_chart(backtest['equity_curve'])
-    st.plotly_chart(fig_equity, use_container_width=True)
-
-    # Weekly performance details in expander
-    with st.expander("Weekly Performance Details", expanded=False):
-        weekly_profits = backtest.get('trades', [])
-        if weekly_profits:
-            # Weekly profits chart
-            fig_weekly = create_weekly_profits_chart(weekly_profits)
-            st.plotly_chart(fig_weekly, use_container_width=True)
-
-            # Weekly profits table
-            st.subheader("Trade Log")
-            trades_df = pd.DataFrame(weekly_profits)
-            if not trades_df.empty:
-                # Format columns
-                display_cols = ['date', 'prediction', 'actual', 'contract', 'side', 'profit']
-                available_cols = [c for c in display_cols if c in trades_df.columns]
-                trades_display = trades_df[available_cols].copy()
-
-                # Format numbers
-                if 'prediction' in trades_display.columns:
-                    trades_display['prediction'] = trades_display['prediction'].apply(lambda x: f"{x:,.0f}")
-                if 'actual' in trades_display.columns:
-                    trades_display['actual'] = trades_display['actual'].apply(lambda x: f"{x:,.0f}")
-                if 'profit' in trades_display.columns:
-                    trades_display['profit'] = trades_display['profit'].apply(lambda x: f"${x:+.2f}")
-
-                st.dataframe(trades_display.tail(20), use_container_width=True)
-
-    st.markdown("---")
-
-# Order Form
+# =============================================================================
+# ORDER FORM SECTION
+# =============================================================================
 st.header("Place Order")
+
+# Pre-fill with recommendation if available
+default_side = 'YES'
+default_side_index = 0
+if recommendation and recommendation.get('side'):
+    default_side = recommendation['side'].upper()
+    default_side_index = 0 if default_side == 'YES' else 1
 
 col1, col2 = st.columns([1, 1])
 
 with col1:
     st.subheader("Order Parameters")
 
+    if recommendation and rec_contract:
+        st.caption(f"Pre-filled with recommendation: {default_side} on {rec_contract['threshold']:,}")
+
     side = st.radio(
         "Side",
         options=['YES', 'NO'],
+        index=default_side_index,
         horizontal=True,
-        help="YES = bet price goes up, NO = bet price goes down"
+        help="YES = bet volume exceeds threshold, NO = bet volume below threshold"
     )
 
     size = st.slider(
         "Contracts",
         min_value=1,
-        max_value=100,
+        max_value=1000,
         value=10,
-        help="Maximum 100 contracts per trade"
+        help="Maximum 1000 contracts per trade"
     )
 
-    # Price suggestion based on order book
-    if side == 'YES':
-        suggested_price = market_data.get('yes_ask', 0.65)
+    # Use market price from recommended contract
+    if rec_contract:
+        if side == 'YES':
+            price = rec_contract.get('yes_ask', rec_contract.get('yes_price', 0.50))
+        else:
+            price = rec_contract.get('no_ask', rec_contract.get('no_price', 0.50))
     else:
-        suggested_price = 1 - market_data.get('yes_bid', 0.62)
+        # Fallback to generic market data
+        market_data = trading_service.get_market_data()
+        yes_ask = market_data.get('yes_ask', 0.50) or 0.50
+        if side == 'YES':
+            price = yes_ask
+        else:
+            price = 1 - yes_ask
 
-    price = st.number_input(
-        "Limit Price",
-        min_value=0.01,
-        max_value=0.99,
-        value=round(suggested_price, 2),
-        step=0.01,
-        format="%.2f"
-    )
+    st.metric("Market Price", f"${price:.2f}")
 
 with col2:
     st.subheader("Order Preview")
@@ -308,21 +351,18 @@ with col2:
 # Risk Warning
 st.markdown("---")
 
-with st.expander("Risk Warning", expanded=True):
+with st.expander("Risk Warning", expanded=False):
     st.warning("""
     **Trading involves risk of loss.**
 
     - Prediction markets can result in total loss of investment
     - Past model performance does not guarantee future results
-    - Maximum position: 100 contracts per trade
-    - 5-second cooldown between trades enforced
+    - Maximum position: 1000 contracts per trade
 
     Only trade with funds you can afford to lose.
     """)
 
 # Confirmation and Submit
-st.markdown("---")
-
 col1, col2, col3 = st.columns([1, 1, 1])
 
 with col1:
@@ -359,32 +399,9 @@ with col3:
                     st.info(f"Demo order placed: {result.get('order_id')}")
                 else:
                     st.success(f"Order placed: {result.get('order_id')}")
-
                 st.json(result)
             else:
                 st.error(f"Order failed: {result.get('error')}")
-
-# Recent Orders
-st.markdown("---")
-st.header("Recent Orders")
-
-trades = trading_service.get_trade_history(days=7)
-
-if not trades.empty:
-    st.dataframe(
-        trades.tail(10).reset_index(),
-        use_container_width=True,
-        column_config={
-            'timestamp': st.column_config.DatetimeColumn('Time'),
-            'side': st.column_config.TextColumn('Side'),
-            'size': st.column_config.NumberColumn('Size'),
-            'price': st.column_config.NumberColumn('Price', format="$%.2f"),
-            'pnl': st.column_config.NumberColumn('P&L', format="$%.2f"),
-            'status': st.column_config.TextColumn('Status')
-        }
-    )
-else:
-    st.info("No recent trades")
 
 # Footer
 st.markdown("---")

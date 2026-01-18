@@ -17,6 +17,7 @@ load_dotenv(project_root / '.env')
 from dashboard.services.data_service import get_data_freshness, get_latest_tsa_value
 from dashboard.services.model_service import get_model_service
 from dashboard.services.trading_service import get_trading_service
+from src.trading.contract_selector import ContractSelector
 
 # Page config
 st.set_page_config(
@@ -91,12 +92,11 @@ def main():
     st.markdown("Real-time predictions and trading for Kalshi TSA checkpoint markets")
 
     # Quick summary metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
 
     # Get latest data
     latest_tsa = get_latest_tsa_value()
     model_perf = model_service.get_recent_performance()
-    market_data = trading_service.get_market_data()
     balance = trading_service.get_account_balance()
 
     with col1:
@@ -108,19 +108,11 @@ def main():
 
     with col2:
         st.metric(
-            "Model Accuracy",
-            f"{model_perf.get('mean_accuracy', 0) * 100:.1f}%",
-            f"{model_perf.get('hit_rate', 0) * 100:.0f}% hit rate"
+            "Recent Accuracy (30d)",
+            f"{model_perf.get('mean_accuracy', 0) * 100:.1f}%"
         )
 
     with col3:
-        st.metric(
-            "Market Price (YES)",
-            f"${market_data.get('yes_bid', 0):.2f} / ${market_data.get('yes_ask', 0):.2f}",
-            f"Vol: {format_number(market_data.get('volume', 0))}"
-        )
-
-    with col4:
         st.metric(
             "Account Balance",
             f"${balance.get('balance', 0):,.2f}",
@@ -132,17 +124,28 @@ def main():
     # Current prediction summary
     col1, col2 = st.columns([2, 1])
 
-    with col1:
-        st.subheader("Current Prediction")
+    prediction = model_service.get_prediction(None)
 
-        prediction = model_service.get_prediction(None)
+    # Convert to daily averages (Kalshi trades on daily average)
+    weekly_pred = prediction.get('prediction')
+    weekly_lower = prediction.get('lower_bound')
+    weekly_upper = prediction.get('upper_bound')
+    weekly_uncertainty = prediction.get('uncertainty')
+
+    daily_pred = weekly_pred / 7 if weekly_pred else None
+    daily_lower = weekly_lower / 7 if weekly_lower else None
+    daily_upper = weekly_upper / 7 if weekly_upper else None
+    daily_std = weekly_uncertainty / 7 if weekly_uncertainty else None
+
+    with col1:
+        st.subheader("Current Prediction (Daily Average)")
 
         pred_col1, pred_col2, pred_col3 = st.columns(3)
 
         with pred_col1:
             st.metric(
-                "Weekly Passenger Forecast",
-                format_number(prediction.get('prediction'))
+                "Daily Passenger Forecast",
+                format_number(daily_pred) if daily_pred else "N/A"
             )
 
         with pred_col2:
@@ -153,36 +156,68 @@ def main():
             )
 
         with pred_col3:
-            lower = prediction.get('lower_bound')
-            upper = prediction.get('upper_bound')
-            if lower and upper:
+            if daily_lower and daily_upper:
+                # Use millions format to avoid truncation
+                lower_m = daily_lower / 1_000_000
+                upper_m = daily_upper / 1_000_000
                 st.metric(
                     "95% Interval",
-                    f"{format_number(lower)} - {format_number(upper)}"
+                    f"{lower_m:.2f}M - {upper_m:.2f}M"
                 )
             else:
                 st.metric("95% Interval", "N/A")
 
+    # Get contract recommendation
+    contracts = trading_service.get_available_contracts()
+
+    # Generate demo contracts if not connected
+    if not contracts and daily_pred:
+        base = round(daily_pred / 50000) * 50000
+        contracts = [
+            {'ticker': f'DEMO-{int(t/1000000)}.{int((t%1000000)/100000):02d}M', 'threshold': t, 'yes_price': 0.5, 'no_price': 0.5}
+            for t in [base - 100000, base - 50000, base, base + 50000, base + 100000, base + 150000]
+            if t > 0
+        ]
+
+    # Get recommendation from ContractSelector
+    recommendation = None
+    if contracts and daily_pred and daily_std:
+        selector = ContractSelector(min_ev_threshold=0.01)
+        recommendation = selector.select_contract(
+            prediction=daily_pred,
+            prediction_std=daily_std,
+            contracts=contracts
+        )
+
     with col2:
-        st.subheader("Trading Signal")
+        st.subheader("Trading Recommendation")
 
-        # Calculate signal
-        pred_value = prediction.get('prediction', 18_500_000)
-        threshold = 18_500_000  # Market threshold
-        predicted_prob = 1 / (1 + np.exp(-(pred_value - threshold) / 500_000))
+        if recommendation and recommendation.get('contract'):
+            # Find the threshold for the recommended contract
+            rec_contract = next((c for c in contracts if c['ticker'] == recommendation['contract']), None)
+            threshold = rec_contract['threshold'] if rec_contract else 0
 
-        market_price = market_data.get('yes_bid', 0.5)
-        signal = trading_service.calculate_signal(predicted_prob, market_price)
+            side = recommendation['side'].upper()
+            ev = recommendation['expected_value']
+            confidence = recommendation['confidence']
 
-        if signal['signal'] == 'HOLD':
-            st.info(f" **{signal['signal']}**")
-        elif 'YES' in signal['signal']:
-            st.success(f" **{signal['signal']}**")
+            if ev >= 0.02:
+                st.success(f"**BUY {side}** on {format_number(threshold)} threshold")
+                st.write(f"**Expected Value**: {ev:.1%}")
+                st.write(f"**Confidence**: {confidence:.0%}")
+                st.caption(recommendation.get('reasoning', ''))
+            elif ev >= 0:
+                st.warning(f"**BUY {side}** (Low EV)")
+                st.write(f"Contract: {format_number(threshold)} threshold")
+                st.write(f"Expected Value: {ev:.1%}")
+                st.caption(recommendation.get('reasoning', ''))
+            else:
+                st.info("**HOLD** - No high-EV contracts")
+                st.caption(recommendation.get('reasoning', ''))
         else:
-            st.error(f" **{signal['signal']}**")
-
-        st.write(f"Edge: {signal['edge_pct']:+.1f}%")
-        st.write(f"Signal strength: {signal['strength'] * 100:.0f}%")
+            reason = recommendation.get('reasoning', 'No contracts available') if recommendation else 'Awaiting prediction data'
+            st.info("**HOLD**")
+            st.caption(reason)
 
     st.markdown("---")
 
@@ -203,9 +238,6 @@ def main():
         if st.button("View Portfolio", use_container_width=True):
             st.switch_page("pages/3_portfolio.py")
 
-
-# Import numpy for sigmoid calculation
-import numpy as np
 
 if __name__ == "__main__":
     main()

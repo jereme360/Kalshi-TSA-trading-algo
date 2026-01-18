@@ -1,0 +1,25 @@
+{
+    "name": "ensemble",
+    "timestamp": "2026-01-17T15:43:10.835316",
+    "config": {
+        "model_dir": "/Users/jeremyalbright/Desktop/CC Projects/Kalshi-TSA-trading-algo/models",
+        "model_configs": {
+            "exp": {
+                "seasonal_periods": [
+                    7
+                ]
+            },
+            "gbm": {
+                "lgb_params": {
+                    "n_estimators": 100,
+                    "learning_rate": 0.05,
+                    "verbosity": -1,
+                    "early_stopping_rounds": 50
+                }
+            }
+        },
+        "weights_method": "learned",
+        "validation_window": 30
+    },
+    "feature_names": null
+}

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class RiskLimits:
     """Risk limit configuration."""
-    max_position_size: int = 100  # Maximum position size in contracts
+    max_position_size: int = 1000  # Maximum position size in contracts
     max_daily_loss: float = 0.15  # Maximum daily loss as fraction of capital
     max_trade_loss: float = 0.05  # Maximum loss per trade as fraction of capital
     max_leverage: float = 1.0    # Maximum allowed leverage
@@ -253,7 +253,7 @@ if __name__ == "__main__":
     # Example usage
     config = {
         'risk_limits': {
-            'max_position_size': 100,
+            'max_position_size': 1000,
             'max_daily_loss': 0.15,
             'max_trade_loss': 0.05,
             'max_leverage': 1.0,
