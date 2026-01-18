@@ -95,9 +95,15 @@ class KalshiAPI:
 
         except requests.exceptions.RequestException as e:
             logger.error(f"API request failed: {e}")
+            error_detail = ""
             if hasattr(e, 'response') and e.response is not None:
                 logger.error(f"Response: {e.response.text}")
-            raise
+                try:
+                    error_json = e.response.json()
+                    error_detail = error_json.get('error', {}).get('message', e.response.text)
+                except:
+                    error_detail = e.response.text
+            raise Exception(f"{e}: {error_detail}") from e
 
     def get_balance(self) -> Dict:
         """Get account balance."""
@@ -195,16 +201,29 @@ class KalshiAPI:
 
     def place_order(self, side: str, size: int, price: float,
                     market_id: Optional[str] = None) -> Dict:
-        """Place a limit order."""
-        market_id = market_id or self.market_id
+        """
+        Place a limit order.
+
+        Args:
+            side: 'buy' or 'sell' (action to take)
+            size: Number of contracts
+            price: Price in dollars (0.01 to 0.99)
+            market_id: Contract ticker (e.g., 'KXTSAW-26JAN18-A2.80')
+        """
+        if not market_id:
+            raise ValueError("Contract ticker (market_id) is required for placing orders")
+
+        # Kalshi API order format
         order_data = {
             'ticker': market_id,
             'action': 'buy' if side.lower() in ['buy', 'yes'] else 'sell',
-            'side': 'yes',  # Kalshi uses yes/no for contract side
+            'side': 'yes',  # Trading YES contracts
             'count': size,
             'type': 'limit',
             'yes_price': int(price * 100)  # Convert to cents
         }
+
+        logger.info(f"Placing order: {order_data}")
         return self._request('POST', '/portfolio/orders', order_data)
 
     def cancel_order(self, order_id: str) -> Dict:

@@ -297,7 +297,7 @@ class TradingService:
         return True, "Order validated"
 
     def place_order(self, side: str, size: int, price: float,
-                   confirmed: bool = False) -> Dict:
+                   confirmed: bool = False, ticker: str = None) -> Dict:
         """
         Place an order with safety checks.
 
@@ -306,6 +306,7 @@ class TradingService:
             size: Number of contracts
             price: Limit price
             confirmed: User confirmation flag
+            ticker: Specific contract ticker (required for real orders)
 
         Returns:
             Dict with order result
@@ -331,22 +332,31 @@ class TradingService:
                 'side': side,
                 'size': size,
                 'price': price,
+                'ticker': ticker or 'DEMO',
                 'message': 'Demo order placed (not executed)'
+            }
+
+        # Require ticker for real orders
+        if not ticker:
+            return {
+                'success': False,
+                'error': 'Contract ticker required for order placement'
             }
 
         # Execute real order
         try:
             kalshi_side = 'buy' if side.lower() == 'yes' else 'sell'
-            result = self.api.place_order(kalshi_side, size, price)
+            result = self.api.place_order(kalshi_side, size, price, market_id=ticker)
             self.last_trade_time = datetime.now()
 
             return {
                 'success': True,
-                'order_id': result.get('id'),
+                'order_id': result.get('order', {}).get('order_id'),
                 'side': side,
                 'size': size,
                 'price': price,
-                'status': result.get('status', 'submitted')
+                'ticker': ticker,
+                'status': result.get('order', {}).get('status', 'submitted')
             }
 
         except Exception as e:

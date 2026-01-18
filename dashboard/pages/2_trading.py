@@ -383,25 +383,32 @@ with col2:
 with col3:
     submit_disabled = not confirmed or not valid
 
+    # Get ticker from recommended contract
+    order_ticker = rec_contract.get('ticker') if rec_contract else None
+
     if st.button("Submit Order", disabled=submit_disabled, type="primary", use_container_width=True):
-        with st.spinner("Placing order..."):
-            time.sleep(1)  # Minimum delay for safety
+        if not order_ticker:
+            st.error("No contract selected. Please wait for contract recommendation.")
+        else:
+            with st.spinner("Placing order..."):
+                time.sleep(1)  # Minimum delay for safety
 
-            result = trading_service.place_order(
-                side=side.lower(),
-                size=size,
-                price=price,
-                confirmed=confirmed
-            )
+                result = trading_service.place_order(
+                    side=side.lower(),
+                    size=size,
+                    price=price,
+                    confirmed=confirmed,
+                    ticker=order_ticker
+                )
 
-            if result.get('success'):
-                if result.get('demo'):
-                    st.info(f"Demo order placed: {result.get('order_id')}")
+                if result.get('success'):
+                    if result.get('demo'):
+                        st.info(f"Demo order placed: {result.get('order_id')}")
+                    else:
+                        st.success(f"Order placed: {result.get('order_id')}")
+                    st.json(result)
                 else:
-                    st.success(f"Order placed: {result.get('order_id')}")
-                st.json(result)
-            else:
-                st.error(f"Order failed: {result.get('error')}")
+                    st.error(f"Order failed: {result.get('error')}")
 
 # Footer
 st.markdown("---")
